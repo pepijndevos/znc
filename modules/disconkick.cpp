@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCNetwork.h>
@@ -17,12 +25,12 @@ public:
 
 	void OnIRCDisconnected()
 	{
-		const vector<CChan*>& vChans = m_pNetwork->GetChans();
+		const vector<CChan*>& vChans = GetNetwork()->GetChans();
 
 		for(vector<CChan*>::const_iterator it = vChans.begin(); it != vChans.end(); ++it)
 		{
 			if((*it)->IsOn()) {
-				PutUser(":ZNC!znc@znc.in KICK " + (*it)->GetName() + " " + m_pNetwork->GetIRCNick().GetNick()
+				PutUser(":ZNC!znc@znc.in KICK " + (*it)->GetName() + " " + GetNetwork()->GetIRCNick().GetNick()
 					+ " :You have been disconnected from the IRC server");
 			}
 		}

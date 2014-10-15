@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/User.h>
@@ -61,7 +69,7 @@ public:
 	virtual bool OnLoad(const CString& sArgs, CString& sMessage)
 	{
 #ifndef MOD_LISTSOCKETS_ALLOW_EVERYONE
-		if (!m_pUser->IsAdmin()) {
+		if (!GetUser()->IsAdmin()) {
 			sMessage = "You must be admin to use this module";
 			return false;
 		}
@@ -110,6 +118,8 @@ public:
 				Row["SSL"] = pSocket->GetSSL() ? "Yes" : "No";
 				Row["Local"] = GetLocalHost(pSocket, true);
 				Row["Remote"] = GetRemoteHost(pSocket, true);
+				Row["In"] = CString::ToByteStr(pSocket->GetBytesRead());
+				Row["Out"] = CString::ToByteStr(pSocket->GetBytesWritten());
 			}
 
 			return true;
@@ -153,7 +163,7 @@ public:
 	CString GetCreatedTime(Csock* pSocket) {
 		unsigned long long iStartTime = pSocket->GetStartTime();
 		time_t iTime = iStartTime / 1000;
-		return CUtils::FormatTime(iTime, "%Y-%m-%d %H:%M:%S", m_pUser->GetTimezone());
+		return CUtils::FormatTime(iTime, "%Y-%m-%d %H:%M:%S", GetUser()->GetTimezone());
 	}
 
 	CString GetLocalHost(Csock* pSocket, bool bShowHosts) {
@@ -214,6 +224,8 @@ public:
 #endif
 		Table.AddColumn("Local");
 		Table.AddColumn("Remote");
+		Table.AddColumn("In");
+		Table.AddColumn("Out");
 
 		while (!socks.empty()) {
 			Csock* pSocket = socks.top().GetSock();
@@ -230,6 +242,8 @@ public:
 
 			Table.SetCell("Local", GetLocalHost(pSocket, bShowHosts));
 			Table.SetCell("Remote", GetRemoteHost(pSocket, bShowHosts));
+			Table.SetCell("In", CString::ToByteStr(pSocket->GetBytesRead()));
+			Table.SetCell("Out", CString::ToByteStr(pSocket->GetBytesWritten()));
 		}
 
 		PutModule(Table);

@@ -1,6 +1,6 @@
 <? INC Header.tmpl ?>
 
-<form action="<? IF Edit ?>edituser<? ELSE ?>adduser<? ENDIF ?>" method="post">
+<form action="<? VAR URIPrefix TOP ?><? VAR ModPath TOP ?><? IF Edit ?>edituser<? ELSE ?>adduser<? ENDIF ?>" method="post">
 	<? INC _csrf_check.tmpl ?>
 	<div class="section">
 		<input type="hidden" name="submitted" value="1" />
@@ -26,7 +26,7 @@
 				<div class="subsection">
 					<div class="inputlabel">Password:</div>
 					<input type="password" name="password" class="half"
-						   title="Please enter a password." />
+						   title="Please enter a password." autocomplete="off" />
 				</div>
 				<div class="subsection">
 					<div class="inputlabel">Confirm password:</div>
@@ -128,7 +128,7 @@
 				<table>
 					<thead>
 					<tr>
-						<td>[<a href="addnetwork?user=<? VAR Username ESC=URL ?>">Add</a>]</td>
+						<td>[<a href="<? VAR URIPrefix TOP ?><? VAR ModPath TOP ?>addnetwork?user=<? VAR Username ESC=URL ?>">Add</a>]</td>
 				<? IF NetworkLoop ?>
 						<td>Name</td>
 						<td>Clients</td>
@@ -145,7 +145,7 @@
 					<tr class="<? IF __EVEN__ ?>evenrow<? ELSE ?>oddrow<? ENDIF ?>">
 						<td>
 							<input type="hidden" name="network" value="<? VAR Name ?>" />
-							[<a href="editnetwork?user=<? VAR Username ESC=URL ?>&amp;network=<? VAR Name ESC=URL ?>">Edit</a>] [<a href="delnetwork?user=<? VAR Username ESC=URL ?>&amp;name=<? VAR Name ESC=URL ?>">Del</a>]
+							[<a href="<? VAR URIPrefix TOP ?><? VAR ModPath TOP ?>editnetwork?user=<? VAR Username ESC=URL ?>&amp;network=<? VAR Name ESC=URL ?>">Edit</a>] [<a href="<? VAR URIPrefix TOP ?><? VAR ModPath TOP ?>delnetwork?user=<? VAR Username ESC=URL ?>&amp;name=<? VAR Name ESC=URL ?>">Del</a>]
 						</td>
 						<td><? VAR Name ?></td>
 						<td><? VAR Clients ?></td>
@@ -172,6 +172,8 @@
 						<td>Name</td>
 						<td>Arguments</td>
 						<td>Description</td>
+						<td>Loaded globally</td>
+						<td>Loaded by networks</td>
 					</tr>
 					</thead>
 					<tbody>
@@ -179,7 +181,7 @@
 				<? LOOP ModuleLoop ?>
 					<tr class="<? IF __EVEN__ ?>evenrow<? ELSE ?>oddrow<? ENDIF ?>">
 						<td class="mod_name">
-							<input type="checkbox" name="loadmod" id="lm_<? VAR Name ?>" value="<? VAR Name ?>"<? IF Checked ?> checked="checked"<? ENDIF ?><? IF Disabled ?> disabled="disabled"<? ENDIF ?> /><label for="lm_<? VAR Name ?>"> <? IF Wiki ?><a href="http://wiki.znc.in/<? VAR Wiki ?>"><? VAR Name ?></a> <? ELSE ?> <? VAR Name ?> <? ENDIF ?></label>
+							<input type="checkbox" name="loadmod" id="lm_<? VAR Name ?>" value="<? VAR Name ?>"<? IF Checked ?> checked="checked"<? ENDIF ?><? IF Disabled ?> disabled="disabled"<? ENDIF ?> /><label for="lm_<? VAR Name ?>"> <? IF Wiki ?><a href="http://wiki.znc.in/<? VAR Wiki ?>" target="_blank" class="external"><? VAR Name ?></a> <? ELSE ?> <? VAR Name ?> <? ENDIF ?></label>
 						</td>
 						<td class="mod_args">
 							<? IF Disabled ?>
@@ -191,6 +193,29 @@
 							<? ENDIF ?>
 						</td>
 						<td class="mod_descr"><? VAR Description ?></td>
+						<td align="center">
+							<? IF CanBeLoadedGlobally ?>
+								<input type="checkbox" name="loaded_globally" id="loaded_globally_<? VAR Name ?>"
+								<? IF LoadedGlobally ?>
+									checked="checked"
+								<? ENDIF ?>
+								disabled="disabled"/>
+							<? ENDIF ?>	
+						</td>
+						<td align="center">
+							<? IF CanBeLoadedByNetwork ?>
+								<input type="checkbox" name="loaded_by_network" id="loaded_by_net_<? VAR Name ?>"
+								<? IF LoadedByAllNetworks ?>
+									checked="checked"
+								<? ENDIF ?>
+								disabled="disabled"/>
+								<? IF LoadedBySomeNetworks && !LoadedByAllNetworks ?>
+									<script type="text/javascript">
+										document.getElementById("loaded_by_net_<? VAR Name ?>").indeterminate = true;
+									</script>
+								<? ENDIF ?>
+							<? ENDIF ?>
+						</td>
 					</tr>
 				<? ENDLOOP ?>
 
@@ -201,11 +226,11 @@
 	</div>
 
 	<div class="section">
-		<h3>Default Settings For New Future Channels</h3>
+		<h3>Default Settings</h3>
 		<div class="sectionbg">
 			<div class="sectionbody">
 				<div class="subsection third">
-					<div class="inputlabel">Modes:</div>
+					<div class="inputlabel">Channel Modes:</div>
 					<input type="text" name="chanmodes" value="<? VAR DefaultChanModes ?>" maxlength="32"
 						   title="These are the default modes ZNC will set when you join an empty channel." />
 					<br /><span class="info">Empty = use standard value</span>
@@ -262,9 +287,19 @@
 						   title="This defines how often ZNC tries to join, if the first join failed, e.g. due to channel mode +i/+k or if you're banned." />
 				</div>
 				<div class="subsection">
+					<div class="inputlabel">Max Joins:</div>
+					<input type="number" name="maxjoins" value="<? VAR MaxJoins ?>" class="third" min="0"
+					       title="How many channels are joined in one JOIN command. 0 is unlimited (default). Set to small positive value if you get disconnected with `Max SendQ Exceeded'"/>
+				</div>
+				<div class="subsection">
 					<div class="inputlabel">Max IRC Networks Number:</div>
 					<input type="number" name="maxnetworks" value="<? VAR MaxNetworks ?>" class="third" min="0"
 					       title="Maximum number of IRC networks allowed for this user." <? IF !ImAdmin ?>disabled="disabled"<? ENDIF ?> />
+				</div>
+				<div class="subsection">
+					<div class="inputlabel">Max Query Buffers:</div>
+					<input type="number" name="maxquerybuffers" value="<? VAR MaxQueryBuffers ?>" class="third" min="0"
+					       title="Maximum number of query buffers. 0 is unlimited."/>
 				</div>
 				<div class="subsection half">
 					<div class="inputlabel">CTCP Replies:</div>
@@ -303,7 +338,12 @@
 	<? ENDLOOP ?>
 
 	<div class="submitline">
+		<? IF ImAdmin ?>
+		<input type="submit" name="submit_return" value="<? IF Edit ?>Save<? ELSE ?><? IF Clone ?>Clone<? ELSE ?>Create<? ENDIF ?><? ENDIF ?> and return" />
+		<input type="submit" name="submit_continue" value="<? IF Edit ?>Save<? ELSE ?><? IF Clone ?>Clone<? ELSE ?>Create<? ENDIF ?><? ENDIF ?> and continue" />
+		<? ELSE ?>
 		<input type="submit" value="<? IF Edit ?>Save<? ELSE ?><? IF Clone ?>Clone<? ELSE ?>Create<? ENDIF ?><? ENDIF ?>" />
+		<? ENDIF ?>
 	</div>
 </form>
 

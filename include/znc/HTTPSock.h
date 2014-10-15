@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _HTTPSOCK_H
@@ -11,13 +19,14 @@
 
 #include <znc/zncconfig.h>
 #include <znc/Socket.h>
+#include <znc/FileUtils.h>
 
 class CModule;
 
 class CHTTPSock : public CSocket {
 public:
-	CHTTPSock(CModule *pMod);
-	CHTTPSock(CModule *pMod, const CString& sHostname, unsigned short uPort, int iTimeout = 60);
+	CHTTPSock(CModule *pMod, const CString& sURIPrefix);
+	CHTTPSock(CModule *pMod, const CString& sURIPrefix, const CString& sHostname, unsigned short uPort, int iTimeout = 60);
 	virtual ~CHTTPSock();
 
 	// Csocket derived members
@@ -47,6 +56,7 @@ public:
 	void ParseURI();
 	void GetPage();
 	static CString GetDate(time_t tm = 0);
+	virtual CString GetRemoteIP() const;
 
 	// Cookies
 	CString GetRequestCookie(const CString& sKey) const;
@@ -66,6 +76,7 @@ public:
 	const CString& GetPass() const;
 	const CString& GetParamString() const;
 	const CString& GetContentType() const;
+	const CString& GetURIPrefix() const;
 	bool IsPost() const;
 	// !Getters
 
@@ -83,6 +94,9 @@ private:
 	static size_t GetParamValues(const CString& sName, VCString& vsRet, const std::map<CString, VCString>& msvsParams, const CString& sFilter);
 	static size_t GetParamValues(const CString& sName, std::set<CString>& ssRet, const std::map<CString, VCString>& msvsParams, const CString& sFilter);
 
+	void WriteFileUncompressed(CFile& File);
+	void WriteFileGzipped(CFile& File);
+
 protected:
 	void PrintPage(const CString& sPage);
 	void Init();
@@ -99,13 +113,16 @@ protected:
 	CString                  m_sPass;
 	CString                  m_sContentType;
 	CString                  m_sDocRoot;
+	CString                  m_sForwardedIP;
 	std::map<CString, VCString>   m_msvsPOSTParams;
 	std::map<CString, VCString>   m_msvsGETParams;
 	MCString                 m_msHeaders;
 	bool                     m_bHTTP10Client;
 	CString                  m_sIfNoneMatch;
+	bool                     m_bAcceptGzip;
 	MCString                 m_msRequestCookies;
 	MCString                 m_msResponseCookies;
+	CString                  m_sURIPrefix;
 };
 
 #endif // !_HTTPSOCK_H

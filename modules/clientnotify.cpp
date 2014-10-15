@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/znc.h>
@@ -27,10 +35,10 @@ protected:
 
 	void SendNotification(const CString& sMessage) {
 		if(m_sMethod == "message") {
-			m_pUser->PutStatus(sMessage, NULL, m_pClient);
+			GetUser()->PutStatus(sMessage, NULL, GetClient());
 		}
 		else if(m_sMethod == "notice") {
-			m_pUser->PutStatusNotice(sMessage, NULL, m_pClient);
+			GetUser()->PutStatusNotice(sMessage, NULL, GetClient());
 		}
 	}
 
@@ -54,13 +62,14 @@ public:
 	}
 
 	void OnClientLogin() {
-		if(!m_bNewOnly || m_sClientsSeen.find(m_pClient->GetRemoteIP()) == m_sClientsSeen.end()) {
+		CString sRemoteIP = GetClient()->GetRemoteIP();
+		if(!m_bNewOnly || m_sClientsSeen.find(sRemoteIP) == m_sClientsSeen.end()) {
 			SendNotification("Another client authenticated as your user. "
 				"Use the 'ListClients' command to see all " +
-				CString(m_pUser->GetAllClients().size())  + " clients.");
+				CString(GetUser()->GetAllClients().size())  + " clients.");
 
 			// the set<> will automatically disregard duplicates:
-			m_sClientsSeen.insert(m_pClient->GetRemoteIP());
+			m_sClientsSeen.insert(sRemoteIP);
 		}
 	}
 
@@ -68,7 +77,7 @@ public:
 		if(m_bOnDisconnect) {
 			SendNotification("A client disconnected from your user. "
 				"Use the 'ListClients' command to see the " +
-				CString(m_pUser->GetAllClients().size()) + " remaining client(s).");
+				CString(GetUser()->GetAllClients().size()) + " remaining client(s).");
 		}
 	}
 

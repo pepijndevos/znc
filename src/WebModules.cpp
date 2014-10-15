@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/WebModules.h>
@@ -11,6 +19,7 @@
 #include <znc/User.h>
 #include <znc/IRCNetwork.h>
 #include <znc/znc.h>
+#include <algorithm>
 #include <sstream>
 
 using std::pair;
@@ -89,6 +98,11 @@ bool CZNCTagHandler::HandleTag(CTemplate& Tmpl, const CString& sName, const CStr
 CWebSession::CWebSession(const CString& sId, const CString& sIP) : m_sId(sId), m_sIP(sIP) {
 	m_pUser = NULL;
 	Sessions.m_mIPSessions.insert(make_pair(sIP, this));
+	UpdateLastActive();
+}
+
+void CWebSession::UpdateLastActive() {
+	time(&m_tmLastActive);
 }
 
 bool CWebSession::IsAdmin() const { return IsLoggedIn() && m_pUser->IsAdmin(); }
@@ -171,7 +185,7 @@ void CWebAuth::Invalidate() {
 	m_pWebSock = NULL;
 }
 
-CWebSock::CWebSock() : CHTTPSock(NULL) {
+CWebSock::CWebSock(const CString& sURIPrefix) : CHTTPSock(NULL, sURIPrefix) {
 	m_bPathsSet = false;
 
 	m_Template.AddTagHandler(new CZNCTagHandler(*this));
@@ -311,6 +325,7 @@ void CWebSock::SetVars() {
 	m_Template["Version"] = CZNC::GetVersion();
 	m_Template["SkinName"] = GetSkinName();
 	m_Template["_CSRF_Check"] = GetCSRFCheck();
+	m_Template["URIPrefix"] = GetURIPrefix();
 
 	if (GetSession()->IsAdmin()) {
 		m_Template["IsAdmin"] = "true";
@@ -361,12 +376,32 @@ bool CWebSock::AddModLoop(const CString& sLoopName, CModule& Module, CTemplate *
 
 	if (!sTitle.empty() && (IsLoggedIn() || (!Module.WebRequiresLogin() && !Module.WebRequiresAdmin())) && (GetSession()->IsAdmin() || !Module.WebRequiresAdmin())) {
 		CTemplate& Row = pTemplate->AddRow(sLoopName);
+		bool bActiveModule = false;
 
 		Row["ModName"] = Module.GetModName();
 		Row["ModPath"] = Module.GetWebPath();
 		Row["Title"] = sTitle;
 
 		if (m_sModName == Module.GetModName()) {
+			CString sModuleType = GetPath().Token(1, false, "/");
+			if (sModuleType == "global" && Module.GetType() == CModInfo::GlobalModule) {
+				bActiveModule = true;
+			} else if (sModuleType == "user" && Module.GetType() == CModInfo::UserModule) {
+				bActiveModule = true;
+			} else if (sModuleType == "network" && Module.GetType() == CModInfo::NetworkModule) {
+				CIRCNetwork *Network = Module.GetNetwork();
+				if (Network) {
+					CString sNetworkName = GetPath().Token(2, false, "/");
+					if (sNetworkName == Network->GetName()) {
+						bActiveModule = true;
+					}
+				} else {
+					bActiveModule = true;
+				}
+			}
+		}
+
+		if (bActiveModule) {
 			Row["Active"] = "true";
 		}
 
@@ -380,7 +415,7 @@ bool CWebSock::AddModLoop(const CString& sLoopName, CModule& Module, CTemplate *
 			TWebSubPage& SubPage = vSubPages[a];
 
 			// bActive is whether or not the current url matches this subpage (params will be checked below)
-			bool bActive = (m_sModName == Module.GetModName() && m_sPage == SubPage->GetName());
+			bool bActive = (m_sModName == Module.GetModName() && m_sPage == SubPage->GetName() && bActiveModule);
 
 			if (SubPage->RequiresAdmin() && !GetSession()->IsAdmin()) {
 				continue;  // Don't add admin-only subpages to requests from non-admin users
@@ -439,6 +474,7 @@ CWebSock::EPageReqResult CWebSock::PrintStaticFile(const CString& sPath, CString
 
 CWebSock::EPageReqResult CWebSock::PrintTemplate(const CString& sPageName, CString& sPageRet, CModule* pModule) {
 	SetVars();
+
 	m_Template["PageName"] = sPageName;
 
 	if (pModule) {
@@ -779,6 +815,10 @@ void CWebSock::PrintErrorPage(const CString& sMessage) {
 	m_Template["Error"] = sMessage;
 }
 
+static inline bool compareLastActive(const std::pair<const CString, CWebSession *> &first, const std::pair<const CString, CWebSession *> &second) {
+	return first.second->GetLastActive() < second.second->GetLastActive();
+}
+
 CSmartPtr<CWebSession> CWebSock::GetSession() {
 	if (!m_spSession.IsNull()) {
 		return m_spSession;
@@ -790,13 +830,16 @@ CSmartPtr<CWebSession> CWebSock::GetSession() {
 	if (pSession != NULL) {
 		// Refresh the timeout
 		Sessions.m_mspSessions.AddItem((*pSession)->GetId(), *pSession);
+		(*pSession)->UpdateLastActive();
 		m_spSession = *pSession;
-		DEBUG("Found existing session from cookie: [" + sCookieSessionId + "] IsLoggedIn(" + CString((*pSession)->IsLoggedIn() ? "true" : "false") + ")");
+		DEBUG("Found existing session from cookie: [" + sCookieSessionId + "] IsLoggedIn(" + CString((*pSession)->IsLoggedIn() ? "true, " + ((*pSession)->GetUser()->GetUserName()) : "false") + ")");
 		return *pSession;
 	}
 
 	if (Sessions.m_mIPSessions.count(GetRemoteIP()) > m_uiMaxSessions) {
-		mIPSessionsIterator it = Sessions.m_mIPSessions.find(GetRemoteIP());
+		pair<mIPSessionsIterator, mIPSessionsIterator> p =
+			Sessions.m_mIPSessions.equal_range(GetRemoteIP());
+		mIPSessionsIterator it = std::min_element(p.first, p.second, compareLastActive);
 		DEBUG("Remote IP:   " << GetRemoteIP() << "; discarding session [" << it->second->GetId() << "]");
 		Sessions.m_mspSessions.RemItem(it->second->GetId());
 	}

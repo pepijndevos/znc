@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _ZNC_H
@@ -48,7 +56,7 @@ public:
 	CString ExpandConfigPath(const CString& sConfigFile, bool bAllowMkDir = true);
 	bool WriteNewConfig(const CString& sConfigFile);
 	bool WriteConfig();
-	bool ParseConfig(const CString& sConfig);
+	bool ParseConfig(const CString& sConfig, CString& sError);
 	bool RehashConfig(CString& sError);
 	void BackupConfigOnce(const CString& sSuffix);
 	static CString GetVersion();
@@ -58,6 +66,9 @@ public:
 	void ClearBindHosts();
 	bool AddBindHost(const CString& sHost);
 	bool RemBindHost(const CString& sHost);
+	void ClearTrustedProxies();
+	bool AddTrustedProxy(const CString& sHost);
+	bool RemTrustedProxy(const CString& sHost);
 	void Broadcast(const CString& sMessage, bool bAdminOnly = false,
 			CUser* pSkipUser = NULL, CClient* pSkipClient = NULL);
 	void AddBytesRead(unsigned long long u) { m_uBytesRead += u; }
@@ -96,7 +107,6 @@ public:
 	CSockManager& GetManager() { return m_Manager; }
 	const CSockManager& GetManager() const { return m_Manager; }
 	CModules& GetModules() { return *m_pModules; }
-	size_t FilterUncommonModules(std::set<CModInfo>& ssModules);
 	CString GetSkinName() const { return m_sSkinName; }
 	const CString& GetStatusPrefix() const { return m_sStatusPrefix; }
 	const CString& GetCurPath() const;
@@ -109,6 +119,7 @@ public:
 	const CString& GetConfigFile() const { return m_sConfigFile; }
 	bool WritePemFile();
 	const VCString& GetBindHosts() const { return m_vsBindHosts; }
+	const VCString& GetTrustedProxies() const { return m_vsTrustedProxies; }
 	const std::vector<CListener*>& GetListeners() const { return m_vpListeners; }
 	time_t TimeStarted() const { return m_TimeStarted; }
 	unsigned int GetMaxBufferSize() const { return m_uiMaxBufferSize; }
@@ -119,7 +130,9 @@ public:
 	// !Getters
 
 	// Static allocator
+	static void CreateInstance();
 	static CZNC& Get();
+	static void DestroyInstance();
 	CUser* FindUser(const CString& sUsername);
 	CModule* FindModule(const CString& sModName, const CString& sUsername);
 	CModule* FindModule(const CString& sModName, CUser* pUser);
@@ -140,7 +153,8 @@ public:
 	// Listener yummy
 	CListener* FindListener(u_short uPort, const CString& BindHost, EAddrType eAddr);
 	bool AddListener(CListener*);
-	bool AddListener(unsigned short uPort, const CString& sBindHost, bool bSSL,
+	bool AddListener(unsigned short uPort, const CString& sBindHost,
+			const CString& sURIPrefix, bool bSSL,
 			EAddrType eAddr, CListener::EAcceptType eAccept, CString& sError);
 	bool DelListener(CListener*);
 
@@ -151,8 +165,8 @@ public:
 	const VCString& GetMotd() const { return m_vsMotd; }
 	// !MOTD
 
-	void AddServerThrottle(CString sName) { m_sConnectThrottle.AddItem(sName); }
-	bool GetServerThrottle(CString sName) { return m_sConnectThrottle.GetItem(sName); }
+	void AddServerThrottle(CString sName) { m_sConnectThrottle.AddItem(sName, true); }
+	bool GetServerThrottle(CString sName) { bool *b = m_sConnectThrottle.GetItem(sName); return (b && *b); }
 
 	void AddNetworkToQueue(CIRCNetwork *pNetwork);
 	std::list<CIRCNetwork*>& GetConnectionQueue() { return m_lpConnectQueue; }
@@ -196,6 +210,7 @@ protected:
 	CString                m_sPidFile;
 	CString                m_sSSLCertFile;
 	VCString               m_vsBindHosts;
+	VCString               m_vsTrustedProxies;
 	VCString               m_vsMotd;
 	CFile*                 m_pLockFile;
 	unsigned int           m_uiConnectDelay;

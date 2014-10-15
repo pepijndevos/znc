@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _CLIENT_H
@@ -86,6 +94,7 @@ public:
 		m_bUHNames = false;
 		m_bAway = false;
 		m_bServerTime = false;
+		m_bBatch = false;
 		EnableReadLine();
 		// RFC says a line can have 512 chars max, but we are
 		// a little more gentle ;)
@@ -106,6 +115,7 @@ public:
 	bool HasUHNames() const { return m_bUHNames; }
 	bool IsAway() const { return m_bAway; }
 	bool HasServerTime() const { return m_bServerTime; }
+	bool HasBatch() const { return m_bBatch; }
 
 	void UserCommand(CString& sLine);
 	void UserPortCommand(CString& sLine);
@@ -121,11 +131,11 @@ public:
 	void PutModule(const CString& sModule, const CString& sLine);
 	void PutModNotice(const CString& sModule, const CString& sLine);
 
-	bool IsCapEnabled(const CString& sCap) { return 1 == m_ssAcceptedCaps.count(sCap); }
+	bool IsCapEnabled(const CString& sCap) const { return 1 == m_ssAcceptedCaps.count(sCap); }
 
 	virtual void ReadLine(const CString& sData);
 	bool SendMotd();
-	void HelpUser();
+	void HelpUser(const CString& sFilter = "");
 	void AuthUser();
 	virtual void Connected();
 	virtual void Timeout();
@@ -138,10 +148,10 @@ public:
 	CUser* GetUser() const { return m_pUser; }
 	void SetNetwork(CIRCNetwork* pNetwork, bool bDisconnect=true, bool bReconnect=true);
 	CIRCNetwork* GetNetwork() const { return m_pNetwork; }
-	std::vector<CClient*>& GetClients();
+	const std::vector<CClient*>& GetClients() const;
 	const CIRCSock* GetIRCSock() const;
 	CIRCSock* GetIRCSock();
-	CString GetFullName();
+	CString GetFullName() const;
 private:
 	void HandleCap(const CString& sLine);
 	void RespondCap(const CString& sResponse);
@@ -155,6 +165,7 @@ protected:
 	bool                 m_bUHNames;
 	bool                 m_bAway;
 	bool                 m_bServerTime;
+	bool                 m_bBatch;
 	CUser*               m_pUser;
 	CIRCNetwork*         m_pNetwork;
 	CString              m_sNick;

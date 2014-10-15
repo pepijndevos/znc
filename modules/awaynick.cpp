@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 // @todo handle raw 433 (nick in use)
@@ -76,10 +84,10 @@ public:
 	}
 
 	void StartBackNickTimer() {
-		CIRCSock* pIRCSock = m_pNetwork->GetIRCSock();
+		CIRCSock* pIRCSock = GetNetwork()->GetIRCSock();
 
 		if (pIRCSock) {
-			CString sConfNick = m_pNetwork->GetNick();
+			CString sConfNick = GetNetwork()->GetNick();
 
 			if (pIRCSock->GetNick().Equals(m_sAwayNick.Left(pIRCSock->GetNick().length()))) {
 				RemTimer("BackNickTimer");
@@ -90,7 +98,8 @@ public:
 
 	virtual EModRet OnIRCRegistration(CString& sPass, CString& sNick,
 			CString& sIdent, CString& sRealName) {
-		if (m_pNetwork && !m_pNetwork->IsUserAttached()) {
+		CIRCNetwork* pNetwork = GetNetwork();
+		if (pNetwork && !pNetwork->IsUserAttached()) {
 			m_sAwayNick = m_sFormat;
 
 			// ExpandString doesn't know our nick yet, so do it by hand.
@@ -98,7 +107,7 @@ public:
 
 			// We don't limit this to NICKLEN, because we dont know
 			// NICKLEN yet.
-			sNick = m_sAwayNick = m_pNetwork->ExpandString(m_sAwayNick);
+			sNick = m_sAwayNick = pNetwork->ExpandString(m_sAwayNick);
 		}
 		return CONTINUE;
 	}
@@ -113,7 +122,7 @@ public:
 	}
 
 	virtual void OnClientDisconnect() {
-		if (!m_pNetwork->IsUserAttached()) {
+		if (!GetNetwork()->IsUserAttached()) {
 			StartAwayNickTimer();
 		}
 	}
@@ -131,7 +140,7 @@ public:
 				SetNV("nick", m_sFormat);
 			}
 
-			if (m_pNetwork) {
+			if (GetNetwork()) {
 				CString sExpanded = GetAwayNick();
 				CString sMsg = "AwayNick is set to [" + m_sFormat + "]";
 
@@ -142,7 +151,7 @@ public:
 				PutModule(sMsg);
 			}
 		} else if (sCommand.Equals("SHOW")) {
-			if (m_pNetwork) {
+			if (GetNetwork()) {
 				CString sExpanded = GetAwayNick();
 				CString sMsg = "AwayNick is set to [" + m_sFormat + "]";
 
@@ -159,13 +168,13 @@ public:
 
 	CString GetAwayNick() {
 		unsigned int uLen = 9;
-		CIRCSock* pIRCSock = m_pNetwork->GetIRCSock();
+		CIRCSock* pIRCSock = GetNetwork()->GetIRCSock();
 
 		if (pIRCSock) {
 			uLen = pIRCSock->GetMaxNickLen();
 		}
 
-		m_sAwayNick = m_pNetwork->ExpandString(m_sFormat).Left(uLen);
+		m_sAwayNick = GetNetwork()->ExpandString(m_sFormat).Left(uLen);
 		return m_sAwayNick;
 	}
 

@@ -1,13 +1,78 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/znc.h>
 #include <signal.h>
+
+#if defined(HAVE_LIBSSL) && defined(HAVE_PTHREAD)
+#include <znc/Threads.h>
+#include <openssl/crypto.h>
+#include <memory>
+
+static std::vector<std::unique_ptr<CMutex> > lock_cs;
+
+static void locking_callback(int mode, int type, const char *file, int line) {
+	if(mode & CRYPTO_LOCK) {
+		lock_cs[type]->lock();
+	} else {
+		lock_cs[type]->unlock();
+	}
+}
+
+static unsigned long thread_id_callback() {
+	return (unsigned long)pthread_self();
+}
+
+static CRYPTO_dynlock_value *dyn_create_callback(const char *file, int line) {
+	return (CRYPTO_dynlock_value*)new CMutex;
+}
+
+static void dyn_lock_callback(int mode, CRYPTO_dynlock_value *dlock, const char *file, int line) {
+	CMutex *mtx = (CMutex*)dlock;
+
+	if(mode & CRYPTO_LOCK) {
+		mtx->lock();
+	} else {
+		mtx->unlock();
+	}
+}
+
+static void dyn_destroy_callback(CRYPTO_dynlock_value *dlock, const char *file, int line) {
+	CMutex *mtx = (CMutex*)dlock;
+
+	delete mtx;
+}
+
+static void thread_setup() {
+	lock_cs.resize(CRYPTO_num_locks());
+
+	for(std::unique_ptr<CMutex> &mtx: lock_cs)
+		mtx = std::unique_ptr<CMutex>(new CMutex());
+
+	CRYPTO_set_id_callback(&thread_id_callback);
+	CRYPTO_set_locking_callback(&locking_callback);
+
+	CRYPTO_set_dynlock_create_callback(&dyn_create_callback);
+	CRYPTO_set_dynlock_lock_callback(&dyn_lock_callback);
+	CRYPTO_set_dynlock_destroy_callback(&dyn_destroy_callback);
+}
+
+#else
+#define thread_setup()
+#endif
 
 using std::cout;
 using std::endl;
@@ -69,7 +134,7 @@ static void die(int sig) {
 
 	CUtils::PrintMessage("Exiting on SIG [" + CString(sig) + "]");
 
-	delete &CZNC::Get();
+	CZNC::DestroyInstance();
 	exit(sig);
 }
 
@@ -117,6 +182,8 @@ static void seedPRNG() {
 int main(int argc, char** argv) {
 	CString sConfig;
 	CString sDataDir = "";
+
+	thread_setup();
 
 	seedPRNG();
 	CDebug::SetStdoutIsTTY(isatty(1));
@@ -185,6 +252,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	CZNC::CreateInstance();
+
 	CZNC* pZNC = &CZNC::Get();
 	pZNC->InitDirs(((argc) ? argv[0] : ""), sDataDir);
 
@@ -192,7 +261,7 @@ int main(int argc, char** argv) {
 	if (bMakePem) {
 		pZNC->WritePemFile();
 
-		delete pZNC;
+		CZNC::DestroyInstance();
 		return 0;
 	}
 #endif /* HAVE_LIBSSL */
@@ -211,7 +280,7 @@ int main(int argc, char** argv) {
 		std::cout << "</Pass>" << std::endl;
 		CUtils::PrintMessage("After that start ZNC again, and you should be able to login with the new password.");
 
-		delete pZNC;
+		CZNC::DestroyInstance();
 		return 0;
 	}
 
@@ -228,7 +297,7 @@ int main(int argc, char** argv) {
 			CUtils::PrintError("No modules found. Perhaps you didn't install ZNC properly?");
 			CUtils::PrintError("Read http://wiki.znc.in/Installation for instructions.");
 			if (!CUtils::GetBoolInput("Do you really want to run ZNC without any modules?", false)) {
-				delete pZNC;
+				CZNC::DestroyInstance();
 				return 1;
 			}
 		}
@@ -239,7 +308,7 @@ int main(int argc, char** argv) {
 		CUtils::PrintError("You are running ZNC as root! Don't do that! There are not many valid");
 		CUtils::PrintError("reasons for this and it can, in theory, cause great damage!");
 		if (!bAllowRoot) {
-			delete pZNC;
+			CZNC::DestroyInstance();
 			return 1;
 		}
 		CUtils::PrintError("You have been warned.");
@@ -250,21 +319,22 @@ int main(int argc, char** argv) {
 
 	if (bMakeConf) {
 		if (!pZNC->WriteNewConfig(sConfig)) {
-			delete pZNC;
+			CZNC::DestroyInstance();
 			return 0;
 		}
 		/* Fall through to normal bootup */
 	}
 
-	if (!pZNC->ParseConfig(sConfig)) {
+	CString sConfigError;
+	if (!pZNC->ParseConfig(sConfig, sConfigError)) {
 		CUtils::PrintError("Unrecoverable config error.");
-		delete pZNC;
+		CZNC::DestroyInstance();
 		return 1;
 	}
 
 	if (!pZNC->OnBoot()) {
 		CUtils::PrintError("Exiting due to module boot errors.");
-		delete pZNC;
+		CZNC::DestroyInstance();
 		return 1;
 	}
 
@@ -281,7 +351,7 @@ int main(int argc, char** argv) {
 
 		if (iPid == -1) {
 			CUtils::PrintStatus(false, strerror(errno));
-			delete pZNC;
+			CZNC::DestroyInstance();
 			return 1;
 		}
 
@@ -301,7 +371,7 @@ int main(int argc, char** argv) {
 		 */
 		if (!pZNC->WaitForChildLock()) {
 			CUtils::PrintError("Child was unable to obtain lock on config file.");
-			delete pZNC;
+			CZNC::DestroyInstance();
 			return 1;
 		}
 
@@ -370,7 +440,7 @@ int main(int argc, char** argv) {
 				// The above code adds 3 entries to args tops
 				// which means the array should be big enough
 
-				delete pZNC;
+				CZNC::DestroyInstance();
 				execvp(args[0], args);
 				CUtils::PrintError("Unable to restart ZNC [" + CString(strerror(errno)) + "]");
 			} /* Fall through */
@@ -379,7 +449,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	delete pZNC;
+	CZNC::DestroyInstance();
 
 	return iRet;
 }

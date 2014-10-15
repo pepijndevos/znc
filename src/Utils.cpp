@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Utils.h>
@@ -148,13 +156,15 @@ CString CUtils::GetSaltedHashPass(CString& sSalt) {
 	sSalt = GetSalt();
 
 	while (true) {
-		CString pass1 = CUtils::GetPass("Enter Password");
-		CString pass2 = CUtils::GetPass("Confirm Password");
+		CString pass1;
+		do {
+			pass1 = CUtils::GetPass("Enter password");
+		} while (pass1.empty());
+
+		CString pass2 = CUtils::GetPass("Confirm password");
 
 		if (!pass1.Equals(pass2, true)) {
 			CUtils::PrintError("The supplied passwords did not match");
-		} else if (pass1.empty()) {
-			CUtils::PrintError("You can not use an empty password");
 		} else {
 			// Construct the salted pass
 			return SaltedSHA256Hash(pass1, sSalt);
@@ -266,9 +276,18 @@ bool CUtils::GetInput(const CString& sPrompt, CString& sRet, const CString& sDef
 	return !sRet.empty();
 }
 
+#define BOLD "\033[1m"
+#define NORM "\033[22m"
+
+#define RED "\033[31m"
+#define GRN "\033[32m"
+#define YEL "\033[33m"
+#define BLU "\033[34m"
+#define DFL "\033[39m"
+
 void CUtils::PrintError(const CString& sMessage) {
 	if (CDebug::StdoutIsTTY())
-		fprintf(stdout, "\033[1m\033[34m[\033[31m ** \033[34m]\033[39m\033[22m %s\n", sMessage.c_str());
+		fprintf(stdout, BOLD BLU "[" RED " ** " BLU "]" DFL NORM" %s\n", sMessage.c_str());
 	else
 		fprintf(stdout, "%s\n", sMessage.c_str());
 	fflush(stdout);
@@ -276,7 +295,7 @@ void CUtils::PrintError(const CString& sMessage) {
 
 void CUtils::PrintPrompt(const CString& sMessage) {
 	if (CDebug::StdoutIsTTY())
-		fprintf(stdout, "\033[1m\033[34m[\033[33m ?? \033[34m]\033[39m\033[22m %s: ", sMessage.c_str());
+		fprintf(stdout, BOLD BLU "[" YEL " ?? " BLU "]" DFL NORM " %s: ", sMessage.c_str());
 	else
 		fprintf(stdout, "[ ?? ] %s: ", sMessage.c_str());
 	fflush(stdout);
@@ -285,10 +304,10 @@ void CUtils::PrintPrompt(const CString& sMessage) {
 void CUtils::PrintMessage(const CString& sMessage, bool bStrong) {
 	if (CDebug::StdoutIsTTY()) {
 		if (bStrong)
-			fprintf(stdout, "\033[1m\033[34m[\033[33m ** \033[34m]\033[39m\033[22m \033[1m%s\033[22m\n",
+			fprintf(stdout, BOLD BLU "[" YEL " ** " BLU "]" DFL BOLD " %s" NORM "\n",
 					sMessage.c_str());
 		else
-			fprintf(stdout, "\033[1m\033[34m[\033[33m ** \033[34m]\033[39m\033[22m %s\n",
+			fprintf(stdout, BOLD BLU "[" YEL " ** " BLU "]" DFL NORM " %s\n",
 					sMessage.c_str());
 	} else
 		fprintf(stdout, "%s\n", sMessage.c_str());
@@ -298,7 +317,7 @@ void CUtils::PrintMessage(const CString& sMessage, bool bStrong) {
 
 void CUtils::PrintAction(const CString& sMessage) {
 	if (CDebug::StdoutIsTTY())
-		fprintf(stdout, "\033[1m\033[34m[\033[32m    \033[34m]\033[39m\033[22m %s... ", sMessage.c_str());
+		fprintf(stdout, BOLD BLU "[ .. " BLU "]" DFL NORM " %s...\n", sMessage.c_str());
 	else
 		fprintf(stdout, "%s... ", sMessage.c_str());
 	fflush(stdout);
@@ -306,21 +325,12 @@ void CUtils::PrintAction(const CString& sMessage) {
 
 void CUtils::PrintStatus(bool bSuccess, const CString& sMessage) {
 	if (CDebug::StdoutIsTTY()) {
-		if (!sMessage.empty()) {
-			if (bSuccess) {
-				fprintf(stdout, "%s", sMessage.c_str());
-			} else {
-				fprintf(stdout, "\033[1m\033[34m[\033[31m %s \033[34m]"
-						"\033[39m\033[22m", sMessage.c_str());
-			}
-		}
-
-		fprintf(stdout, "\r");
-
 		if (bSuccess) {
-			fprintf(stdout, "\033[1m\033[34m[\033[32m ok \033[34m]\033[39m\033[22m\n");
+			fprintf(stdout,  BOLD BLU "[" GRN " >> " BLU "]" DFL NORM);
+			fprintf(stdout, " %s\n", sMessage.empty() ? "ok" : sMessage.c_str());
 		} else {
-			fprintf(stdout, "\033[1m\033[34m[\033[31m !! \033[34m]\033[39m\033[22m\n");
+			fprintf(stdout,  BOLD BLU "[" RED " !! " BLU "]" DFL NORM);
+			fprintf(stdout,  BOLD RED " %s" DFL NORM "\n", sMessage.empty() ? "failed" : sMessage.c_str());
 		}
 	} else {
 		if (bSuccess) {
@@ -337,13 +347,37 @@ void CUtils::PrintStatus(bool bSuccess, const CString& sMessage) {
 	fflush(stdout);
 }
 
-CString CUtils::CTime(time_t t, const CString& sTZ) {
+namespace {
+	/* Switch GMT-X and GMT+X
+	 *
+	 * See https://en.wikipedia.org/wiki/Tz_database#Area
+	 *
+	 * "In order to conform with the POSIX style, those zone names beginning
+	 * with "Etc/GMT" have their sign reversed from what most people expect.
+	 * In this style, zones west of GMT have a positive sign and those east
+	 * have a negative sign in their name (e.g "Etc/GMT-14" is 14 hours
+	 * ahead/east of GMT.)"
+	 */
+	inline CString FixGMT(CString sTZ) {
+		if (sTZ.length() >= 4 && sTZ.Left(3) == "GMT") {
+			if (sTZ[3] == '+') {
+				sTZ[3] = '-';
+			} else if (sTZ[3] == '-') {
+				sTZ[3] = '+';
+			}
+		}
+		return sTZ;
+	}
+}
+
+CString CUtils::CTime(time_t t, const CString& sTimezone) {
 	char s[30] = {}; // should have at least 26 bytes
-	if (sTZ.empty()) {
+	if (sTimezone.empty()) {
 		ctime_r(&t, s);
 		// ctime() adds a trailing newline
 		return CString(s).Trim_n();
 	}
+	CString sTZ = FixGMT(sTimezone);
 
 	// backup old value
 	char* oldTZ = getenv("TZ");
@@ -365,14 +399,15 @@ CString CUtils::CTime(time_t t, const CString& sTZ) {
 	return CString(s).Trim_n();
 }
 
-CString CUtils::FormatTime(time_t t, const CString& sFormat, const CString& sTZ) {
+CString CUtils::FormatTime(time_t t, const CString& sFormat, const CString& sTimezone) {
 	char s[1024] = {};
 	tm m;
-	if (sTZ.empty()) {
+	if (sTimezone.empty()) {
 		localtime_r(&t, &m);
 		strftime(s, sizeof(s), sFormat.c_str(), &m);
 		return s;
 	}
+	CString sTZ = FixGMT(sTimezone);
 
 	// backup old value
 	char* oldTZ = getenv("TZ");
@@ -393,6 +428,22 @@ CString CUtils::FormatTime(time_t t, const CString& sFormat, const CString& sTZ)
 	tzset();
 
 	return s;
+}
+
+CString CUtils::FormatServerTime(const timeval& tv) {
+	CString s_msec(tv.tv_usec / 1000);
+	while (s_msec.length() < 3) {
+		s_msec = "0" + s_msec;
+	}
+	// TODO support leap seconds properly
+	// TODO support message-tags properly
+	struct tm stm;
+	memset(&stm, 0, sizeof(stm));
+	const time_t secs = tv.tv_sec; // OpenBSD has tv_sec as int, so explicitly convert it to time_t to make gmtime_r() happy
+	gmtime_r(&secs, &stm);
+	char sTime[20] = {};
+	strftime(sTime, sizeof(sTime), "%Y-%m-%dT%H:%M:%S", &stm);
+	return CString(sTime) + "." + s_msec + "Z";
 }
 
 namespace {
@@ -419,9 +470,46 @@ namespace {
 }
 
 SCString CUtils::GetTimezones() {
-	SCString result;
-	FillTimezones("/usr/share/zoneinfo", result, "");
+	static SCString result;
+	if (result.empty()) {
+		FillTimezones("/usr/share/zoneinfo", result, "");
+	}
 	return result;
+}
+
+MCString CUtils::GetMessageTags(const CString& sLine) {
+	if (sLine.StartsWith("@")) {
+		VCString vsTags;
+		sLine.Token(0).TrimPrefix_n("@").Split(";", vsTags, false);
+
+		MCString mssTags;
+		for (VCString::const_iterator it = vsTags.begin(); it != vsTags.end(); ++it) {
+			CString sKey = it->Token(0, false, "=", true);
+			CString sValue = it->Token(1, true, "=", true);
+			mssTags[sKey] = sValue.Escape(CString::EMSGTAG, CString::CString::EASCII);
+		}
+		return mssTags;
+	}
+	return MCString::EmptyMap;
+}
+
+void CUtils::SetMessageTags(CString& sLine, const MCString& mssTags) {
+	if (sLine.StartsWith("@")) {
+		sLine.LeftChomp(sLine.Token(0).length() + 1);
+	}
+
+	if (!mssTags.empty()) {
+		CString sTags;
+		for (MCString::const_iterator it = mssTags.begin(); it != mssTags.end(); ++it) {
+			if (!sTags.empty()) {
+				sTags += ";";
+			}
+			sTags += it->first;
+			if (!it->second.empty())
+				sTags += "=" + it->second.Escape_n(CString::EMSGTAG);
+		}
+		sLine = "@" + sTags + " " + sLine;
+	}
 }
 
 bool CTable::AddColumn(const CString& sName) {

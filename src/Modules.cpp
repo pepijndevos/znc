@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Modules.h>
@@ -149,6 +157,10 @@ CModule::~CModule() {
 	}
 
 	SaveRegistry();
+
+#ifdef HAVE_PTHREAD
+	CancelJobs(m_sJobs);
+#endif
 }
 
 void CModule::SetUser(CUser* pUser) { m_pUser = pUser; }
@@ -207,6 +219,22 @@ bool CModule::LoadRegistry() {
 bool CModule::SaveRegistry() const {
 	//CString sPrefix = (m_pUser) ? m_pUser->GetUserName() : ".global";
 	return (m_mssRegistry.WriteToDisk(GetSavePath() + "/.registry", 0600) == MCString::MCS_SUCCESS);
+}
+
+bool CModule::MoveRegistry(const CString& sPath) {
+	if (m_sSavePath != sPath) {
+		CFile fOldNVFile = CFile(m_sSavePath + "/.registry");
+		if (!fOldNVFile.Exists()) {
+			return false;
+		}
+		if (!CFile::Exists(sPath) && !CDir::MakeDir(sPath)) {
+			return false;
+		}
+		fOldNVFile.Copy(sPath + "/.registry");
+		m_sSavePath = sPath;
+		return true;
+	}
+	return false;
 }
 
 bool CModule::SetNV(const CString & sName, const CString & sValue, bool bWriteToDisk) {
@@ -441,6 +469,52 @@ void CModule::ListSockets() {
 	PutModule(Table);
 }
 
+#ifdef HAVE_PTHREAD
+CModuleJob::~CModuleJob()
+{
+	m_pModule->UnlinkJob(this);
+}
+
+void CModule::AddJob(CModuleJob *pJob)
+{
+	CThreadPool::Get().addJob(pJob);
+	m_sJobs.insert(pJob);
+}
+
+void CModule::CancelJob(CModuleJob *pJob)
+{
+	if (pJob == NULL)
+		return;
+	// Destructor calls UnlinkJob and removes the job from m_sJobs
+	CThreadPool::Get().cancelJob(pJob);
+}
+
+bool CModule::CancelJob(const CString& sJobName)
+{
+	set<CModuleJob*>::iterator it;
+	for (it = m_sJobs.begin(); it != m_sJobs.end(); ++it) {
+		if ((*it)->GetName().Equals(sJobName)) {
+			CancelJob(*it);
+			return true;
+		}
+	}
+	return false;
+}
+
+void CModule::CancelJobs(const std::set<CModuleJob*>& sJobs)
+{
+	set<CJob*> sPlainJobs(sJobs.begin(), sJobs.end());
+
+	// Destructor calls UnlinkJob and removes the jobs from m_sJobs
+	CThreadPool::Get().cancelJobs(sPlainJobs);
+}
+
+bool CModule::UnlinkJob(CModuleJob *pJob)
+{
+	return 0 != m_sJobs.erase(pJob);
+}
+#endif
+
 bool CModule::AddCommand(const CModCommand& Command)
 {
 	if (Command.GetFunction() == NULL)
@@ -496,18 +570,23 @@ bool CModule::HandleCommand(const CString& sLine) {
 }
 
 void CModule::HandleHelpCommand(const CString& sLine) {
-	CString sFilter = sLine.Token(1, true);
+	CString sFilter = sLine.Token(1).AsLower();
 	CString::size_type  iFilterLength = sFilter.size();
 	CTable Table;
 	map<CString, CModCommand>::const_iterator it;
 
 	CModCommand::InitHelp(Table);
 	for (it = m_mCommands.begin(); it != m_mCommands.end(); ++it) {
-		if (sFilter.empty() || (it->second.GetCommand().Equals(sFilter, false, iFilterLength))) {
+		CString sCmd = it->second.GetCommand().AsLower();
+		if (sFilter.empty() || (sCmd.Equals(sFilter, true, iFilterLength)) || sCmd.WildCmp(sFilter)) {
 			it->second.AddHelp(Table);
 		}
 	}
-	PutModule(Table);
+	if (Table.empty()) {
+		PutModule("No matches for '" + sFilter + "'");
+	} else {
+		PutModule(Table);
+	}
 }
 
 CString CModule::GetModNick() const { return ((m_pUser) ? m_pUser->GetStatusPrefix() : "*") + m_sModName; }
@@ -529,13 +608,35 @@ void CModule::OnIRCConnectionError(CIRCSock *IRCSock) {}
 CModule::EModRet CModule::OnIRCRegistration(CString& sPass, CString& sNick, CString& sIdent, CString& sRealName) { return CONTINUE; }
 CModule::EModRet CModule::OnBroadcast(CString& sMessage) { return CONTINUE; }
 
-void CModule::OnChanPermission(const CNick& OpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange) {}
-void CModule::OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
-void CModule::OnDeop(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
-void CModule::OnVoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
-void CModule::OnDevoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
-void CModule::OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes, const CString& sArgs) {}
-void CModule::OnMode(const CNick& OpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange) {}
+void CModule::OnChanPermission2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange) {
+	if (pOpNick) OnChanPermission(*pOpNick, Nick, Channel, uMode, bAdded, bNoChange);
+}
+void CModule::OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
+	if (pOpNick) OnOp(*pOpNick, Nick, Channel, bNoChange);
+}
+void CModule::OnDeop2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
+	if (pOpNick) OnDeop(*pOpNick, Nick, Channel, bNoChange);
+}
+void CModule::OnVoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
+	if (pOpNick) OnVoice(*pOpNick, Nick, Channel, bNoChange);
+}
+void CModule::OnDevoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
+	if (pOpNick) OnDevoice(*pOpNick, Nick, Channel, bNoChange);
+}
+void CModule::OnRawMode2(const CNick* pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs) {
+	if (pOpNick) OnRawMode(*pOpNick, Channel, sModes, sArgs);
+}
+void CModule::OnMode2(const CNick* pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange) {
+	if (pOpNick) OnMode(*pOpNick, Channel, uMode, sArg, bAdded, bNoChange);
+}
+
+void CModule::OnChanPermission(const CNick& pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange) {}
+void CModule::OnOp(const CNick& pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
+void CModule::OnDeop(const CNick& pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
+void CModule::OnVoice(const CNick& pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
+void CModule::OnDevoice(const CNick& pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {}
+void CModule::OnRawMode(const CNick& pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs) {}
+void CModule::OnMode(const CNick& pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange) {}
 
 CModule::EModRet CModule::OnRaw(CString& sLine) { return CONTINUE; }
 
@@ -559,6 +660,7 @@ void CModule::OnUnknownModCommand(const CString& sLine) {
 void CModule::OnQuit(const CNick& Nick, const CString& sMessage, const vector<CChan*>& vChans) {}
 void CModule::OnNick(const CNick& Nick, const CString& sNewNick, const vector<CChan*>& vChans) {}
 void CModule::OnKick(const CNick& Nick, const CString& sKickedNick, CChan& Channel, const CString& sMessage) {}
+CModule::EModRet CModule::OnJoining(CChan& Channel) { return CONTINUE; }
 void CModule::OnJoin(const CNick& Nick, CChan& Channel) {}
 void CModule::OnPart(const CNick& Nick, CChan& Channel, const CString& sMessage) {}
 CModule::EModRet CModule::OnInvite(const CNick& Nick, const CString& sChan) { return CONTINUE; }
@@ -592,6 +694,11 @@ CModule::EModRet CModule::OnPrivNotice(CNick& Nick, CString& sMessage) { return 
 CModule::EModRet CModule::OnChanNotice(CNick& Nick, CChan& Channel, CString& sMessage) { return CONTINUE; }
 CModule::EModRet CModule::OnTopic(CNick& Nick, CChan& Channel, CString& sTopic) { return CONTINUE; }
 CModule::EModRet CModule::OnTimerAutoJoin(CChan& Channel) { return CONTINUE; }
+CModule::EModRet CModule::OnAddNetwork(CIRCNetwork& Network, CString& sErrorRet) { return CONTINUE; }
+CModule::EModRet CModule::OnDeleteNetwork(CIRCNetwork& Network) { return CONTINUE; }
+
+CModule::EModRet CModule::OnSendToClient(CString& sLine, CClient& Client) { return CONTINUE; }
+CModule::EModRet CModule::OnSendToIRC(CString& sLine) { return CONTINUE; }
 
 bool CModule::OnServerCapAvailable(const CString& sCap) { return false; }
 void CModule::OnServerCapResult(const CString& sCap, bool bSuccess) {}
@@ -707,12 +814,20 @@ bool CModules::OnIRCConnectionError(CIRCSock *pIRCSock) { MODUNLOADCHK(OnIRCConn
 bool CModules::OnIRCRegistration(CString& sPass, CString& sNick, CString& sIdent, CString& sRealName) { MODHALTCHK(OnIRCRegistration(sPass, sNick, sIdent, sRealName)); }
 bool CModules::OnBroadcast(CString& sMessage) { MODHALTCHK(OnBroadcast(sMessage)); }
 bool CModules::OnIRCDisconnected() { MODUNLOADCHK(OnIRCDisconnected()); return false; }
+
+bool CModules::OnChanPermission2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange) { MODUNLOADCHK(OnChanPermission2(pOpNick, Nick, Channel, uMode, bAdded, bNoChange)); return false; }
 bool CModules::OnChanPermission(const CNick& OpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange) { MODUNLOADCHK(OnChanPermission(OpNick, Nick, Channel, uMode, bAdded, bNoChange)); return false; }
+bool CModules::OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnOp2(pOpNick, Nick, Channel, bNoChange)); return false; }
 bool CModules::OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnOp(OpNick, Nick, Channel, bNoChange)); return false; }
+bool CModules::OnDeop2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnDeop2(pOpNick, Nick, Channel, bNoChange)); return false; }
 bool CModules::OnDeop(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnDeop(OpNick, Nick, Channel, bNoChange)); return false; }
+bool CModules::OnVoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnVoice2(pOpNick, Nick, Channel, bNoChange)); return false; }
 bool CModules::OnVoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnVoice(OpNick, Nick, Channel, bNoChange)); return false; }
+bool CModules::OnDevoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnDevoice2(pOpNick, Nick, Channel, bNoChange)); return false; }
 bool CModules::OnDevoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) { MODUNLOADCHK(OnDevoice(OpNick, Nick, Channel, bNoChange)); return false; }
+bool CModules::OnRawMode2(const CNick* pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs) { MODUNLOADCHK(OnRawMode2(pOpNick, Channel, sModes, sArgs)); return false; }
 bool CModules::OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes, const CString& sArgs) { MODUNLOADCHK(OnRawMode(OpNick, Channel, sModes, sArgs)); return false; }
+bool CModules::OnMode2(const CNick* pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange) { MODUNLOADCHK(OnMode2(pOpNick, Channel, uMode, sArg, bAdded, bNoChange)); return false; }
 bool CModules::OnMode(const CNick& OpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange) { MODUNLOADCHK(OnMode(OpNick, Channel, uMode, sArg, bAdded, bNoChange)); return false; }
 bool CModules::OnRaw(CString& sLine) { MODHALTCHK(OnRaw(sLine)); }
 
@@ -732,6 +847,7 @@ bool CModules::OnUserTopicRequest(CString& sChannel) { MODHALTCHK(OnUserTopicReq
 bool CModules::OnQuit(const CNick& Nick, const CString& sMessage, const vector<CChan*>& vChans) { MODUNLOADCHK(OnQuit(Nick, sMessage, vChans)); return false; }
 bool CModules::OnNick(const CNick& Nick, const CString& sNewNick, const vector<CChan*>& vChans) { MODUNLOADCHK(OnNick(Nick, sNewNick, vChans)); return false; }
 bool CModules::OnKick(const CNick& Nick, const CString& sKickedNick, CChan& Channel, const CString& sMessage) { MODUNLOADCHK(OnKick(Nick, sKickedNick, Channel, sMessage)); return false; }
+bool CModules::OnJoining(CChan& Channel) { MODHALTCHK(OnJoining(Channel)); }
 bool CModules::OnJoin(const CNick& Nick, CChan& Channel) { MODUNLOADCHK(OnJoin(Nick, Channel)); return false; }
 bool CModules::OnPart(const CNick& Nick, CChan& Channel, const CString& sMessage) { MODUNLOADCHK(OnPart(Nick, Channel, sMessage)); return false; }
 bool CModules::OnInvite(const CNick& Nick, const CString& sChan) { MODHALTCHK(OnInvite(Nick, sChan)); }
@@ -750,6 +866,10 @@ bool CModules::OnPrivNotice(CNick& Nick, CString& sMessage) { MODHALTCHK(OnPrivN
 bool CModules::OnChanNotice(CNick& Nick, CChan& Channel, CString& sMessage) { MODHALTCHK(OnChanNotice(Nick, Channel, sMessage)); }
 bool CModules::OnTopic(CNick& Nick, CChan& Channel, CString& sTopic) { MODHALTCHK(OnTopic(Nick, Channel, sTopic)); }
 bool CModules::OnTimerAutoJoin(CChan& Channel) { MODHALTCHK(OnTimerAutoJoin(Channel)); }
+bool CModules::OnAddNetwork(CIRCNetwork& Network, CString& sErrorRet) { MODHALTCHK(OnAddNetwork(Network, sErrorRet)); }
+bool CModules::OnDeleteNetwork(CIRCNetwork& Network) { MODHALTCHK(OnDeleteNetwork(Network)); }
+bool CModules::OnSendToClient(CString& sLine, CClient& Client) { MODHALTCHK(OnSendToClient(sLine, Client)); }
+bool CModules::OnSendToIRC(CString& sLine) { MODHALTCHK(OnSendToIRC(sLine)); }
 bool CModules::OnStatusCommand(CString& sCommand) { MODHALTCHK(OnStatusCommand(sCommand)); }
 bool CModules::OnModCommand(const CString& sCommand) { MODUNLOADCHK(OnModCommand(sCommand)); return false; }
 bool CModules::OnModNotice(const CString& sMessage) { MODUNLOADCHK(OnModNotice(sMessage)); return false; }
@@ -1095,6 +1215,28 @@ void CModules::GetAvailableMods(set<CModInfo>& ssMods, CModInfo::EModuleType eTy
 	}
 
 	GLOBALMODULECALL(OnGetAvailableMods(ssMods, eType), NOTHING);
+}
+
+void CModules::GetDefaultMods(set<CModInfo>& ssMods, CModInfo::EModuleType eType) {
+
+	GetAvailableMods(ssMods, eType);
+
+	const map<CString, CModInfo::EModuleType> ns = {
+		{ "chansaver", CModInfo::UserModule },
+		{ "controlpanel", CModInfo::UserModule },
+		{ "simple_away", CModInfo::NetworkModule },
+		{ "webadmin", CModInfo::GlobalModule }
+	};
+
+	auto it = ssMods.begin();
+	while (it != ssMods.end()) {
+		auto it2 = ns.find(it->GetName());
+		if (it2 != ns.end() && it2->second == eType) {
+			++it;
+		} else {
+			it = ssMods.erase(it);
+		}
+	}
 }
 
 bool CModules::FindModPath(const CString& sModule, CString& sModPath,

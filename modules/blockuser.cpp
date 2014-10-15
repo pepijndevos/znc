@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/User.h>
@@ -55,7 +63,7 @@ public:
 	void OnModCommand(const CString& sCommand) {
 		CString sCmd = sCommand.Token(0);
 
-		if (!m_pUser->IsAdmin()) {
+		if (!GetUser()->IsAdmin()) {
 			PutModule("Access denied");
 			return;
 		}
@@ -76,7 +84,7 @@ public:
 		} else if (sCmd.Equals("block")) {
 			CString sUser = sCommand.Token(1, true);
 
-			if (m_pUser->GetUserName().Equals(sUser)) {
+			if (GetUser()->GetUserName().Equals(sUser)) {
 				PutModule("You can't block yourself");
 				return;
 			}
@@ -172,4 +180,4 @@ template<> void TModInfo<CBlockUser>(CModInfo& Info) {
 	Info.SetArgsHelpText("Enter one or more user names. Separate them by spaces.");
 }
 
-GLOBALMODULEDEFS(CBlockUser, "Block certain users from logging in")
+GLOBALMODULEDEFS(CBlockUser, "Block certain users from logging in.")

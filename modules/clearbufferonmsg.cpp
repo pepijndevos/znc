@@ -1,13 +1,22 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCNetwork.h>
 #include <znc/Chan.h>
+#include <znc/Query.h>
 
 using std::vector;
 
@@ -16,11 +25,11 @@ public:
 	MODCONSTRUCTOR(CClearBufferOnMsgMod) {}
 
 	void ClearAllBuffers() {
-		if (m_pNetwork) {
-			const vector<CChan*>& vChans = m_pNetwork->GetChans();
-			vector<CChan*>::const_iterator it;
+		CIRCNetwork* pNetwork = GetNetwork();
+		if (pNetwork) {
+			const vector<CChan*>& vChans = pNetwork->GetChans();
 
-			for (it = vChans.begin(); it != vChans.end(); ++it) {
+			for (vector<CChan*>::const_iterator it = vChans.begin(); it != vChans.end(); ++it) {
 				// Skip detached channels, they weren't read yet
 				if ((*it)->IsDetached())
 					continue;
@@ -29,6 +38,12 @@ public:
 				// We deny AutoClearChanBuffer on all channels since this module
 				// doesn't make any sense with it
 				(*it)->SetAutoClearChanBuffer(false);
+			}
+
+			vector<CQuery*> VQueries = pNetwork->GetQueries();
+
+			for (vector<CQuery*>::const_iterator it = VQueries.begin(); it != VQueries.end(); ++it) {
+				pNetwork->DelQuery((*it)->GetName());
 			}
 		}
 	}
@@ -68,4 +83,4 @@ template<> void TModInfo<CClearBufferOnMsgMod>(CModInfo& Info) {
 	Info.SetWikiPage("clearbufferonmsg");
 }
 
-USERMODULEDEFS(CClearBufferOnMsgMod, "Clear all channel buffers whenever the user does something")
+USERMODULEDEFS(CClearBufferOnMsgMod, "Clear all channel and query buffers whenever the user does something")

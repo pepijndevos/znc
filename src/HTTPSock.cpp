@@ -1,25 +1,38 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/FileUtils.h>
 #include <znc/znc.h>
+#include <iomanip>
 
+
+#ifdef HAVE_ZLIB
+#include <zlib.h>
+#endif
 
 using std::map;
 using std::set;
 
 #define MAX_POST_SIZE	1024 * 1024
 
-CHTTPSock::CHTTPSock(CModule *pMod) : CSocket(pMod) {
+CHTTPSock::CHTTPSock(CModule *pMod, const CString& sURIPrefix) : CSocket(pMod), m_sURIPrefix(sURIPrefix) {
 	Init();
 }
 
-CHTTPSock::CHTTPSock(CModule *pMod, const CString& sHostname, unsigned short uPort, int iTimeout) : CSocket(pMod, sHostname, uPort, iTimeout) {
+CHTTPSock::CHTTPSock(CModule *pMod, const CString& sURIPrefix, const CString& sHostname, unsigned short uPort, int iTimeout) : CSocket(pMod, sHostname, uPort, iTimeout), m_sURIPrefix(sURIPrefix) {
 	Init();
 }
 
@@ -30,6 +43,7 @@ void CHTTPSock::Init() {
 	m_bPost = false;
 	m_bDone = false;
 	m_bHTTP10Client = false;
+	m_bAcceptGzip = false;
 	m_uPostLen = 0;
 	EnableReadLine();
 	SetMaxBufferThreshold(10240);
@@ -113,9 +127,46 @@ void CHTTPSock::ReadLine(const CString& sData) {
 		m_uPostLen = sLine.Token(1).ToULong();
 		if (m_uPostLen > MAX_POST_SIZE)
 			PrintErrorPage(413, "Request Entity Too Large", "The request you sent was too large.");
+	} else if (sName.Equals("X-Forwarded-For:")) {
+		// X-Forwarded-For: client, proxy1, proxy2
+		if (m_sForwardedIP.empty()) {
+			const VCString& vsTrustedProxies = CZNC::Get().GetTrustedProxies();
+			CString sIP = GetRemoteIP();
+
+			VCString vsIPs;
+			sLine.Token(1, true).Split(",", vsIPs, false, "", "", false, true);
+
+			while (!vsIPs.empty()) {
+				// sIP told us that it got connection from vsIPs.back()
+				// check if sIP is trusted proxy
+				bool bTrusted = false;
+				for (VCString::const_iterator it = vsTrustedProxies.begin(); it != vsTrustedProxies.end(); ++it) {
+					if (sIP.WildCmp(*it)) {
+						bTrusted = true;
+						break;
+					}
+				}
+				if (bTrusted) {
+					// sIP is trusted proxy, so use vsIPs.back() as new sIP
+					sIP = vsIPs.back();
+					vsIPs.pop_back();
+				} else {
+					break;
+				}
+			}
+
+			// either sIP is not trusted proxy, or it's in the beginning of the X-Forwarded-For list
+			// in both cases use it as the endpoind
+			m_sForwardedIP = sIP;
+		}
 	} else if (sName.Equals("If-None-Match:")) {
 		// this is for proper client cache support (HTTP 304) on static files:
 		m_sIfNoneMatch = sLine.Token(1, true);
+	} else if (sName.Equals("Accept-Encoding:") && !m_bHTTP10Client) {
+		SCString ssEncodings;
+		// trimming whitespace from the tokens is important:
+		sLine.Token(1, true).Split(",", ssEncodings, false, "", "", false, true);
+		m_bAcceptGzip = (ssEncodings.find("gzip") != ssEncodings.end());
 	} else if (sLine.empty()) {
 		m_bGotHeader = true;
 
@@ -128,6 +179,14 @@ void CHTTPSock::ReadLine(const CString& sData) {
 
 		DisableReadLine();
 	}
+}
+
+CString CHTTPSock::GetRemoteIP() const {
+	if (!m_sForwardedIP.empty()) {
+		return m_sForwardedIP;
+	}
+
+	return CSocket::GetRemoteIP();
 }
 
 CString CHTTPSock::GetDate(time_t stamp) {
@@ -155,10 +214,67 @@ CString CHTTPSock::GetDate(time_t stamp) {
 void CHTTPSock::GetPage() {
 	DEBUG("Page Request [" << m_sURI << "] ");
 
-	OnPageRequest(m_sURI);
+	// Check that the requested path starts with the prefix. Strip it if so.
+	if (!m_sURI.TrimPrefix(m_sURIPrefix)) {
+		DEBUG("INVALID path => Does not start with prefix [" + m_sURIPrefix + "]");
+		DEBUG("Expected prefix:   " << m_sURIPrefix);
+		DEBUG("Requested path:    " << m_sURI);
+		Redirect("/");
+	} else {
+		OnPageRequest(m_sURI);
+	}
+
 }
 
+#ifdef HAVE_ZLIB
+static bool InitZlibStream(z_stream *zStrm, const char* buf) {
+	memset(zStrm, 0, sizeof(z_stream));
+	zStrm->next_in = (Bytef*)buf;
+
+	// "15" is the default value for good compression,
+	// the weird "+ 16" means "please generate a gzip header and trailer".
+	const int WINDOW_BITS = 15 + 16;
+	const int MEMLEVEL = 8;
+
+	return (deflateInit2(zStrm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+		WINDOW_BITS, MEMLEVEL, Z_DEFAULT_STRATEGY) == Z_OK);
+}
+#endif
+
 void CHTTPSock::PrintPage(const CString& sPage) {
+#ifdef HAVE_ZLIB
+	if (m_bAcceptGzip && !SentHeader()) {
+		char szBuf[4096];
+		z_stream zStrm;
+		int zStatus, zFlush = Z_NO_FLUSH;
+
+		if (InitZlibStream(&zStrm, sPage.c_str())) {
+			DEBUG("- Sending gzip-compressed.");
+			AddHeader("Content-Encoding", "gzip");
+			PrintHeader(0); // we do not know the compressed data's length
+
+			zStrm.avail_in = sPage.size();
+			do {
+				if (zStrm.avail_in == 0) {
+					zFlush = Z_FINISH;
+				}
+
+				zStrm.next_out = (Bytef*)szBuf;
+				zStrm.avail_out = sizeof(szBuf);
+
+				zStatus = deflate(&zStrm, zFlush);
+
+				if((zStatus == Z_OK || zStatus == Z_STREAM_END) && zStrm.avail_out < sizeof(szBuf)) {
+					Write(szBuf, sizeof(szBuf) - zStrm.avail_out);	
+				}
+			} while(zStatus == Z_OK);
+
+			Close(Csock::CLT_AFTERWRITE);
+			return;
+		}
+
+	} // else: fall through
+#endif
 	if (!SentHeader()) {
 		PrintHeader(sPage.length());
 	} else {
@@ -244,20 +360,19 @@ bool CHTTPSock::PrintFile(const CString& sFileName, CString sContentType) {
 			return true;
 		}
 
-		char szBuf[4096];
-		off_t iLen = 0;
-		ssize_t i = 0;
+#ifdef HAVE_ZLIB
+		bool bGzip = m_bAcceptGzip && (sContentType.Left(5).Equals("text/") || sFileName.Right(3).Equals(".js"));
 
-		PrintHeader(iSize, sContentType);
-
-		// while we haven't reached iSize and read() succeeds...
-		while (iLen < iSize && (i = File.Read(szBuf, sizeof(szBuf))) > 0) {
-			Write(szBuf, i);
-			iLen += i;
-		}
-
-		if (i < 0) {
-			DEBUG("- Error while reading file: " << strerror(errno));
+		if (bGzip) {
+			DEBUG("- Sending gzip-compressed.");
+			AddHeader("Content-Encoding", "gzip");
+			PrintHeader(0, sContentType); // we do not know the compressed data's length
+			WriteFileGzipped(File);
+		} else
+#endif
+		{
+			PrintHeader(iSize, sContentType);
+			WriteFileUncompressed(File);
 		}
 	}
 
@@ -267,6 +382,78 @@ bool CHTTPSock::PrintFile(const CString& sFileName, CString sContentType) {
 
 	return true;
 }
+
+void CHTTPSock::WriteFileUncompressed(CFile& File) {
+	char szBuf[4096];
+	off_t iLen = 0;
+	ssize_t i = 0;
+	off_t iSize = File.GetSize();
+
+	// while we haven't reached iSize and read() succeeds...
+	while (iLen < iSize && (i = File.Read(szBuf, sizeof(szBuf))) > 0) {
+		Write(szBuf, i);
+		iLen += i;
+	}
+
+	if (i < 0) {
+		DEBUG("- Error while reading file: " << strerror(errno));
+	}
+}
+
+#ifdef HAVE_ZLIB
+void CHTTPSock::WriteFileGzipped(CFile& File) {
+	char szBufIn[8192];
+	char szBufOut[8192];
+	off_t iFileSize = File.GetSize(), iFileReadTotal = 0;
+	z_stream zStrm;
+	int zFlush = Z_NO_FLUSH;
+	int zStatus;
+
+	if (!InitZlibStream(&zStrm, szBufIn)) {
+		DEBUG("- Error initializing zlib!");
+		return;
+	}
+
+	do {
+		ssize_t iFileRead = 0;
+
+		if (zStrm.avail_in == 0) {
+			// input buffer is empty, try to read more data from file.
+			// if there is no more data, finish the stream.
+
+			if (iFileReadTotal < iFileSize) {
+				iFileRead = File.Read(szBufIn, sizeof(szBufIn));
+
+				if (iFileRead < 1) {
+					// wtf happened? better quit compressing.
+					iFileReadTotal = iFileSize;
+					zFlush = Z_FINISH;
+				} else {
+					iFileReadTotal += iFileRead;
+
+					zStrm.next_in = (Bytef*)szBufIn;
+					zStrm.avail_in = iFileRead;
+				}
+			} else {
+				zFlush = Z_FINISH;
+			}
+		}
+
+		zStrm.next_out = (Bytef*)szBufOut;
+		zStrm.avail_out = sizeof(szBufOut);
+
+		zStatus = deflate(&zStrm, zFlush);
+
+		if ((zStatus == Z_OK || zStatus == Z_STREAM_END) && zStrm.avail_out < sizeof(szBufOut)) {
+			// there's data in the buffer:
+			Write(szBufOut, sizeof(szBufOut) - zStrm.avail_out);
+		}
+
+	} while (zStatus == Z_OK);
+
+	deflateEnd(&zStrm);
+}
+#endif
 
 void CHTTPSock::ParseURI() {
 	ParseParams(m_sURI.Token(1, true, "?"), m_msvsGETParams);
@@ -315,6 +502,10 @@ const CString& CHTTPSock::GetContentType() const {
 
 const CString& CHTTPSock::GetParamString() const {
 	return m_sPostData;
+}
+
+const CString& CHTTPSock::GetURIPrefix() const {
+	return m_sURIPrefix;
 }
 
 bool CHTTPSock::HasParam(const CString& sName, bool bPost) const {
@@ -507,7 +698,7 @@ bool CHTTPSock::PrintHeader(off_t uContentLength, const CString& sContentType, u
 	MCString::iterator it;
 
 	for (it = m_msResponseCookies.begin(); it != m_msResponseCookies.end(); ++it) {
-		Write("Set-Cookie: " + it->first.Escape_n(CString::EURL) + "=" + it->second.Escape_n(CString::EURL) + "; path=/;\r\n");
+		Write("Set-Cookie: " + it->first.Escape_n(CString::EURL) + "=" + it->second.Escape_n(CString::EURL) + "; path=/;" + (GetSSL() ? "Secure;" : "") + "\r\n");
 	}
 
 	for (it = m_msHeaders.begin(); it != m_msHeaders.end(); ++it) {
@@ -534,13 +725,19 @@ bool CHTTPSock::Redirect(const CString& sURL) {
 	if (SentHeader()) {
 		DEBUG("Redirect() - Header was already sent");
 		return false;
+	} else if(!sURL.StartsWith("/")) {
+		// HTTP/1.1 only admits absolute URIs for the Location header.
+		DEBUG("Redirect to relative URI [" + sURL + "] is not allowed.");
+		return false;
+	} else {
+		CString location = m_sURIPrefix + sURL;
+
+		DEBUG("- Redirect to [" << location << "] with prefix [" + m_sURIPrefix + "]");
+		AddHeader("Location", location);
+		PrintErrorPage(302, "Found", "The document has moved <a href=\"" + location.Escape_n(CString::EHTML) + "\">here</a>.");
+
+		return true;
 	}
-
-	DEBUG("- Redirect to [" << sURL << "]");
-	AddHeader("Location", sURL);
-	PrintErrorPage(302, "Found", "The document has moved <a href=\"" + sURL.Escape_n(CString::EHTML) + "\">here</a>.");
-
-	return true;
 }
 
 void CHTTPSock::Connected() {

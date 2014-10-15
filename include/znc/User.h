@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _USER_H
@@ -49,7 +57,7 @@ public:
 		return CUtils::SaltedSHA256Hash(sPass, sSalt);
 	}
 
-	CConfig ToConfig();
+	CConfig ToConfig() const;
 	bool CheckPass(const CString& sPass) const;
 	bool AddAllowedHost(const CString& sHostMask);
 	bool IsHostAllowed(const CString& sHostMask) const;
@@ -63,7 +71,7 @@ public:
 	// !Modules
 
 	// Networks
-	CIRCNetwork* AddNetwork(const CString &sNetwork);
+	CIRCNetwork* AddNetwork(const CString &sNetwork, CString& sErrorRet);
 	bool DeleteNetwork(const CString& sNetwork);
 	bool AddNetwork(CIRCNetwork *pNetwork);
 	void RemoveNetwork(CIRCNetwork *pNetwork);
@@ -83,7 +91,7 @@ public:
 	void UserConnected(CClient* pClient);
 	void UserDisconnected(CClient* pClient);
 
-	CString GetLocalDCCIP();
+	CString GetLocalDCCIP() const;
 
 	CString ExpandString(const CString& sStr) const;
 	CString& ExpandString(const CString& sStr, CString& sRet) const;
@@ -112,11 +120,13 @@ public:
 	void SetDenySetBindHost(bool b);
 	bool SetStatusPrefix(const CString& s);
 	void SetDefaultChanModes(const CString& s);
+	void SetClientEncoding(const CString& s);
 	void SetQuitMsg(const CString& s);
 	bool AddCTCPReply(const CString& sCTCP, const CString& sReply);
 	bool DelCTCPReply(const CString& sCTCP);
 	bool SetBufferCount(unsigned int u, bool bForce = false);
 	void SetAutoClearChanBuffer(bool b);
+	void SetAutoClearQueryBuffer(bool b);
 
 	void SetBeingDeleted(bool b) { m_bBeingDeleted = b; }
 	void SetTimestampFormat(const CString& s) { m_sTimestampFormat = s; }
@@ -124,13 +134,15 @@ public:
 	void SetTimestampPrepend(bool b) { m_bPrependTimestamp = b; }
 	void SetTimezone(const CString& s) { m_sTimezone = s; }
 	void SetJoinTries(unsigned int i) { m_uMaxJoinTries = i; }
+	void SetMaxJoins(unsigned int i) { m_uMaxJoins = i; }
 	void SetSkinName(const CString& s) { m_sSkinName = s; }
 	void SetMaxNetworks(unsigned int i) { m_uMaxNetworks = i; }
+	void SetMaxQueryBuffers(unsigned int i) { m_uMaxQueryBuffers = i; }
 	// !Setters
 
 	// Getters
-	std::vector<CClient*>& GetUserClients() { return m_vClients; }
-	std::vector<CClient*> GetAllClients();
+	const std::vector<CClient*>& GetUserClients() const { return m_vClients; }
+	std::vector<CClient*> GetAllClients() const;
 	const CString& GetUserName() const;
 	const CString& GetCleanUserName() const;
 	const CString& GetNick(bool bAllowDefault = true) const;
@@ -144,6 +156,7 @@ public:
 	const CString& GetPassSalt() const;
 	const std::set<CString>& GetAllowedHosts() const;
 	const CString& GetTimestampFormat() const;
+	const CString& GetClientEncoding() const;
 	bool GetTimestampAppend() const;
 	bool GetTimestampPrepend() const;
 
@@ -160,13 +173,16 @@ public:
 	const MCString& GetCTCPReplies() const;
 	unsigned int GetBufferCount() const;
 	bool AutoClearChanBuffer() const;
+	bool AutoClearQueryBuffer() const;
 	bool IsBeingDeleted() const { return m_bBeingDeleted; }
 	CString GetTimezone() const { return m_sTimezone; }
 	unsigned long long BytesRead() const { return m_uBytesRead; }
 	unsigned long long BytesWritten() const { return m_uBytesWritten; }
 	unsigned int JoinTries() const { return m_uMaxJoinTries; }
+	unsigned int MaxJoins() const { return m_uMaxJoins; }
 	CString GetSkinName() const;
 	unsigned int MaxNetworks() const { return m_uMaxNetworks; }
+	unsigned int MaxQueryBuffers() const { return m_uMaxQueryBuffers; }
 	// !Getters
 
 protected:
@@ -182,6 +198,7 @@ protected:
 	CString               m_sPassSalt;
 	CString               m_sStatusPrefix;
 	CString               m_sDefaultChanModes;
+	CString               m_sClientEncoding;
 
 	CString               m_sQuitMsg;
 	MCString              m_mssCTCPReplies;
@@ -198,6 +215,7 @@ protected:
 	bool                  m_bAdmin;
 	bool                  m_bDenySetBindHost;
 	bool                  m_bAutoClearChanBuffer;
+	bool                  m_bAutoClearQueryBuffer;
 	bool                  m_bBeingDeleted;
 	bool                  m_bAppendTimestamp;
 	bool                  m_bPrependTimestamp;
@@ -212,6 +230,8 @@ protected:
 	unsigned long long    m_uBytesWritten;
 	unsigned int          m_uMaxJoinTries;
 	unsigned int          m_uMaxNetworks;
+	unsigned int          m_uMaxQueryBuffers;
+	unsigned int          m_uMaxJoins;
 	CString               m_sSkinName;
 
 	CModules*             m_pModules;

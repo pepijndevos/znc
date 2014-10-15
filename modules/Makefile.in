@@ -36,7 +36,6 @@ PYTHON_ON:= @PYTHON@
 PY_CFLAGS:= @python_CFLAGS@
 PY_LDFLAGS:=@python_LIBS@
 SWIG     := @SWIG@
-SWIG_ON  := @USESWIG@
 MODDIR   := @MODDIR@
 DATADIR  := @DATADIR@
 LIBZNC   := @LIBZNC@
@@ -88,11 +87,6 @@ ifeq "@CYRUS@" ""
 FILES    := $(shell echo $(FILES) | sed -e "s:cyrusauth::")
 endif
 cyrusauthLDFLAGS := -lsasl2
-
-ifeq "@CHARSET@" ""
-FILES    := $(shell echo $(FILES) | sed -e "s:charset::")
-endif
-charsetLDFLAGS := @LIBICONV@
 
 TARGETS  := $(addsuffix .so, $(FILES))
 

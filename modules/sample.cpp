@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Client.h>
@@ -11,6 +19,36 @@
 #include <znc/Modules.h>
 
 using std::vector;
+
+class CSampleJob : public CModuleJob {
+public:
+	CSampleJob(CModule *pModule) : CModuleJob(pModule, "sample", "Message the user after a delay") {}
+
+	~CSampleJob() {
+		if (wasCancelled()) {
+			GetModule()->PutModule("Sample job cancelled");
+		} else {
+			GetModule()->PutModule("Sample job destroyed");
+		}
+	}
+
+	virtual void runThread() {
+		// Cannot safely use GetModule() in here, because this runs in its
+		// own thread and such an access would require synchronisation
+		// between this thread and the main thread!
+
+		for (int i = 0; i < 10; i++) {
+			// Regularly check if we were cancelled
+			if (wasCancelled())
+				return;
+			sleep(1);
+		}
+	}
+
+	virtual void runMain() {
+		GetModule()->PutModule("Sample job done");
+	}
+};
 
 class CSampleTimer : public CTimer {
 public:
@@ -21,7 +59,7 @@ public:
 private:
 protected:
 	virtual void RunJob() {
-		m_pModule->PutModule("TEST!!!!");
+		GetModule()->PutModule("TEST!!!!");
 	}
 };
 
@@ -34,6 +72,7 @@ public:
 		//AddTimer(new CSampleTimer(this, 300, 0, "Sample", "Sample timer for sample things."));
 		//AddTimer(new CSampleTimer(this, 5, 20, "Another", "Another sample timer."));
 		//AddTimer(new CSampleTimer(this, 25000, 5, "Third", "A third sample timer."));
+		AddJob(new CSampleJob(this));
 		return true;
 	}
 
@@ -195,7 +234,7 @@ public:
 	}
 
 	virtual EModRet OnUserTopic(CString& sTarget, CString& sTopic) {
-		PutModule("* " + m_pClient->GetNick() + " changed topic on " + sTarget + " to '" + sTopic + "'");
+		PutModule("* " + GetClient()->GetNick() + " changed topic on " + sTarget + " to '" + sTopic + "'");
 
 		return CONTINUE;
 	}

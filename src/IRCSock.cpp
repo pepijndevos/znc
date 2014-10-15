@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCSock.h>
@@ -11,6 +19,7 @@
 #include <znc/User.h>
 #include <znc/IRCNetwork.h>
 #include <znc/Server.h>
+#include <znc/Query.h>
 
 using std::set;
 using std::vector;
@@ -57,6 +66,7 @@ CIRCSock::CIRCSock(CIRCNetwork* pNetwork) : CZNCSock() {
 	EnableReadLine();
 	m_Nick.SetIdent(m_pNetwork->GetIdent());
 	m_Nick.SetHost(m_pNetwork->GetBindHost());
+	SetEncoding(m_pNetwork->GetEncoding());
 
 	m_uMaxNickLen = 9;
 	m_uCapPaused = 0;
@@ -114,7 +124,7 @@ void CIRCSock::Quit(const CString& sQuitMsg) {
 	if (!sQuitMsg.empty()) {
 		PutIRC("QUIT :" + sQuitMsg);
 	} else {
-		PutIRC("QUIT :" + m_pNetwork->ExpandString(m_pNetwork->GetUser()->GetQuitMsg()));
+		PutIRC("QUIT :" + m_pNetwork->ExpandString(m_pNetwork->GetQuitMsg()));
 	}
 	Close(CLT_AFTERWRITE);
 }
@@ -165,13 +175,13 @@ void CIRCSock::ReadLine(const CString& sData) {
 				}
 
 				m_pNetwork->SetIRCServer(sServer);
-				SetTimeout(540, TMO_READ);  // Now that we are connected, let nature take its course
+				SetTimeout(CIRCNetwork::NO_TRAFFIC_TIMEOUT, TMO_READ);  // Now that we are connected, let nature take its course
 				PutIRC("WHO " + sNick);
 
 				m_bAuthed = true;
 				m_pNetwork->PutStatus("Connected!");
 
-				vector<CClient*>& vClients = m_pNetwork->GetClients();
+				const vector<CClient*>& vClients = m_pNetwork->GetClients();
 
 				for (unsigned int a = 0; a < vClients.size(); a++) {
 					CClient* pClient = vClients[a];
@@ -189,6 +199,10 @@ void CIRCSock::ReadLine(const CString& sData) {
 
 				m_pNetwork->ClearRawBuffer();
 				m_pNetwork->AddRawBuffer(":" + _NAMEDFMT(sServer) + " " + sCmd + " {target} " + _NAMEDFMT(sRest));
+
+				// Join the first set of channels as soon as we are connected
+				// and let the CIRCNetworkJoinTimer join the rest.
+				m_pNetwork->JoinChans();
 
 				break;
 			}
@@ -340,8 +354,8 @@ void CIRCSock::ReadLine(const CString& sData) {
 				if (m_bNamesx && (sNick.size() > 1) && IsPermChar(sNick[1])) {
 					// sLine uses multi-prefix
 
-					vector<CClient*>& vClients = m_pNetwork->GetClients();
-					vector<CClient*>::iterator it;
+					const vector<CClient*>& vClients = m_pNetwork->GetClients();
+					vector<CClient*>::const_iterator it;
 					for (it = vClients.begin(); it != vClients.end(); ++it) {
 						CClient *pClient = *it;
 
@@ -420,9 +434,6 @@ void CIRCSock::ReadLine(const CString& sData) {
 
 				break;
 			}
-			case 381:  // You are now an IRC Operator
-				m_pNetwork->AddRawBuffer(":" + _NAMEDFMT(sServer) + " " + sCmd + " {target} " + _NAMEDFMT(sRest));
-				break;
 			case 375:  // begin motd
 			case 422:  // MOTD File is missing
 				if (m_pNetwork->GetIRCServer().Equals(sServer)) {
@@ -507,8 +518,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 				}
 			}
 
-			// Todo: use nick compare function here
-			if (Nick.GetNick().Equals(GetNick())) {
+			if (Nick.NickEquals(GetNick())) {
 				// We are changing our own nick, the clients always must see this!
 				bIsVisible = false;
 				SetNick(sNewNick);
@@ -526,7 +536,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 
 			// :nick!ident@host.com QUIT :message
 
-			if (Nick.GetNick().Equals(GetNick())) {
+			if (Nick.NickEquals(GetNick())) {
 				m_pNetwork->PutStatus("You quit [" + sMessage + "]");
 				// We don't call module hooks and we don't
 				// forward this quit to clients (Some clients
@@ -558,8 +568,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 			CString sChan = sRest.Token(0).TrimPrefix_n();
 			CChan* pChan;
 
-			// Todo: use nick compare function
-			if (Nick.GetNick().Equals(GetNick())) {
+			if (Nick.NickEquals(GetNick())) {
 				m_pNetwork->AddChan(sChan, false);
 				pChan = m_pNetwork->FindChan(sChan);
 				if (pChan) {
@@ -593,8 +602,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 					bDetached = true;
 			}
 
-			// Todo: use nick compare function
-			if (Nick.GetNick().Equals(GetNick())) {
+			if (Nick.NickEquals(GetNick())) {
 				m_pNetwork->DelChan(sChan);
 			}
 
@@ -698,7 +706,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 				}
 			}
 
-			if (Nick.GetNick().Equals(m_pNetwork->GetIRCServer())) {
+			if (Nick.NickEquals(m_pNetwork->GetIRCServer())) {
 				m_pNetwork->PutUser(":" + Nick.GetNick() + " NOTICE " + sTarget + " :" + sMsg);
 			} else {
 				m_pNetwork->PutUser(":" + Nick.GetNickMask() + " NOTICE " + sTarget + " :" + sMsg);
@@ -766,7 +774,7 @@ void CIRCSock::ReadLine(const CString& sData) {
 			CString sMsg = sRest.Token(0, true).TrimPrefix_n();
 
 			if (!m_pNetwork->IsUserOnline()) {
-				m_pNetwork->AddQueryBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " WALLOPS :{text}", sMsg);
+				m_pNetwork->AddNoticeBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " WALLOPS :{text}", sMsg);
 			}
 		} else if (sCmd.Equals("CAP")) {
 			// CAPs are supported only before authorization.
@@ -878,9 +886,11 @@ bool CIRCSock::OnPrivCTCP(CNick& Nick, CString& sMessage) {
 		IRCSOCKMODULECALL(OnPrivAction(Nick, sMessage), &bResult);
 		if (bResult) return true;
 
-		if (!m_pNetwork->IsUserOnline()) {
-			// If the user is detached, add to the buffer
-			m_pNetwork->AddQueryBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " PRIVMSG {target} :\001ACTION {text}\001", sMessage);
+		if (!m_pNetwork->IsUserOnline() || !m_pNetwork->GetUser()->AutoClearQueryBuffer()) {
+			CQuery* pQuery = m_pNetwork->AddQuery(Nick.GetNick());
+			if (pQuery) {
+				pQuery->AddBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " PRIVMSG {target} :\001ACTION {text}\001", sMessage);
+			}
 		}
 
 		sMessage = "ACTION " + sMessage;
@@ -923,7 +933,7 @@ bool CIRCSock::OnGeneralCTCP(CNick& Nick, CString& sMessage) {
 		// If we are over the limit, don't reply to this CTCP
 		if (m_uNumCTCP >= m_uCTCPFloodCount) {
 			DEBUG("CTCP flood detected - not replying to query");
-			return false;
+			return true;
 		}
 		m_uNumCTCP++;
 
@@ -941,7 +951,7 @@ bool CIRCSock::OnPrivNotice(CNick& Nick, CString& sMessage) {
 
 	if (!m_pNetwork->IsUserOnline()) {
 		// If the user is detached, add to the buffer
-		m_pNetwork->AddQueryBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " NOTICE {target} :{text}", sMessage);
+		m_pNetwork->AddNoticeBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " NOTICE {target} :{text}", sMessage);
 	}
 
 	return false;
@@ -952,9 +962,11 @@ bool CIRCSock::OnPrivMsg(CNick& Nick, CString& sMessage) {
 	IRCSOCKMODULECALL(OnPrivMsg(Nick, sMessage), &bResult);
 	if (bResult) return true;
 
-	if (!m_pNetwork->IsUserOnline()) {
-		// If the user is detached, add to the buffer
-		m_pNetwork->AddQueryBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " PRIVMSG {target} :{text}", sMessage);
+	if (!m_pNetwork->IsUserOnline() || !m_pNetwork->GetUser()->AutoClearQueryBuffer()) {
+		CQuery* pQuery = m_pNetwork->AddQuery(Nick.GetNick());
+		if (pQuery) {
+			pQuery->AddBuffer(":" + _NAMEDFMT(Nick.GetNickMask()) + " PRIVMSG {target} :{text}", sMessage);
+		}
 	}
 
 	return false;
@@ -1016,22 +1028,34 @@ bool CIRCSock::OnChanMsg(CNick& Nick, const CString& sChan, CString& sMessage) {
 }
 
 void CIRCSock::PutIRC(const CString& sLine) {
-	DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << sLine << "] (queued)");
+	// Only print if the line won't get sent immediately (same condition as in TrySend()!)
+	if (m_bFloodProtection && m_iSendsAllowed <= 0) {
+		DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << sLine << "] (queued)");
+	}
 	m_vsSendQueue.push_back(sLine);
 	TrySend();
 }
 
 void CIRCSock::PutIRCQuick(const CString& sLine) {
-	DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << sLine << "] (queued to front)");
+	// Only print if the line won't get sent immediately (same condition as in TrySend()!)
+	if (m_bFloodProtection && m_iSendsAllowed <= 0) {
+		DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << sLine << "] (queued to front)");
+	}
 	m_vsSendQueue.push_front(sLine);
 	TrySend();
 }
 
 void CIRCSock::TrySend() {
-	while (!m_vsSendQueue.empty() && (m_iSendsAllowed > 0 || !m_bFloodProtection)) {
+	// This condition must be the same as in PutIRC() and PutIRCQuick()!
+	while (!m_vsSendQueue.empty() && (!m_bFloodProtection || m_iSendsAllowed > 0)) {
 		m_iSendsAllowed--;
-		DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << m_vsSendQueue.front() << "]");
-		Write(m_vsSendQueue.front() + "\r\n");
+		bool bSkip = false;
+		CString& sLine = m_vsSendQueue.front();
+		ALLMODULECALL(OnSendToIRC(sLine), &bSkip);
+		if (!bSkip) {;
+			DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/" << m_pNetwork->GetName() << ") ZNC -> IRC [" << sLine << "]");
+			Write(sLine + "\r\n");
+		}
 		m_vsSendQueue.pop_front();
 	}
 }
@@ -1199,9 +1223,18 @@ void CIRCSock::ParseISupport(const CString& sLine) {
 	}
 }
 
+CString CIRCSock::GetISupport(const CString& sKey, const CString& sDefault) const {
+	MCString::const_iterator i = m_mISupport.find(sKey.AsUpper());
+	if (i == m_mISupport.end()) {
+		return sDefault;
+	} else {
+		return i->second;
+	}
+}
+
 void CIRCSock::ForwardRaw353(const CString& sLine) const {
-	vector<CClient*>& vClients = m_pNetwork->GetClients();
-	vector<CClient*>::iterator it;
+	const vector<CClient*>& vClients = m_pNetwork->GetClients();
+	vector<CClient*>::const_iterator it;
 
 	for (it = vClients.begin(); it != vClients.end(); ++it) {
 		ForwardRaw353(sLine, *it);
@@ -1263,22 +1296,22 @@ void CIRCSock::SendAltNick(const CString& sBadNick) {
 
 	const CString& sConfNick = m_pNetwork->GetNick();
 	const CString& sAltNick  = m_pNetwork->GetAltNick();
-	CString sNewNick;
+	CString sNewNick = sConfNick.Left(uMax - 1);
 
 	if (sLastNick.Equals(sConfNick)) {
 		if ((!sAltNick.empty()) && (!sConfNick.Equals(sAltNick))) {
 			sNewNick = sAltNick;
 		} else {
-			sNewNick = sConfNick.Left(uMax - 1) + "-";
+			sNewNick += "-";
 		}
-	} else if (sLastNick.Equals(sAltNick)) {
-		sNewNick = sConfNick.Left(uMax -1) + "-";
-	} else if (sLastNick.Equals(CString(sConfNick.Left(uMax -1) + "-"))) {
-		sNewNick = sConfNick.Left(uMax -1) + "|";
-	} else if (sLastNick.Equals(CString(sConfNick.Left(uMax -1) + "|"))) {
-		sNewNick = sConfNick.Left(uMax -1) + "^";
-	} else if (sLastNick.Equals(CString(sConfNick.Left(uMax -1) + "^"))) {
-		sNewNick = sConfNick.Left(uMax -1) + "a";
+	} else if (sLastNick.Equals(sAltNick) && !sAltNick.Equals(sNewNick + "-")) {
+		sNewNick += "-";
+	} else if (sLastNick.Equals(sNewNick + "-") && !sAltNick.Equals(sNewNick + "|")) {
+		sNewNick += "|";
+	} else if (sLastNick.Equals(sNewNick + "|") && !sAltNick.Equals(sNewNick + "^")) {
+		sNewNick += "^";
+	} else if (sLastNick.Equals(sNewNick + "^") && !sAltNick.Equals(sNewNick + "a")) {
+		sNewNick += "a";
 	} else {
 		char cLetter = 0;
 		if (sBadNick.empty()) {
@@ -1296,6 +1329,8 @@ void CIRCSock::SendAltNick(const CString& sBadNick) {
 		}
 
 		sNewNick = sConfNick.Left(uMax -1) + ++cLetter;
+		if (sNewNick.Equals(sAltNick))
+			sNewNick = sConfNick.Left(uMax -1) + ++cLetter;
 	}
 	PutIRC("NICK " + sNewNick);
 	m_Nick.SetNick(sNewNick);

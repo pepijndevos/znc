@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2013 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef ZNCSTRING_H
@@ -14,6 +22,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <sstream>
 #include <sys/types.h>
 
 #define _SQL(s) CString("'" + CString(s).Escape_n(CString::ESQL) + "'")
@@ -48,6 +57,11 @@ static const unsigned char base64_table[256] = {
 	XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
 };
 
+enum class CaseSensitivity {
+	CaseInsensitive,
+	CaseSensitive
+};
+
 /**
  * @brief String class that is used inside ZNC.
  *
@@ -62,8 +76,13 @@ public:
 		EURL,
 		EHTML,
 		ESQL,
-		ENAMEDFMT
+		ENAMEDFMT,
+		EDEBUG,
+		EMSGTAG
 	} EEscape;
+
+	static const CaseSensitivity CaseSensitive = CaseSensitivity::CaseSensitive;
+	static const CaseSensitivity CaseInsensitive = CaseSensitivity::CaseInsensitive;
 
 	explicit CString(bool b) : std::string(b ? "true" : "false") {}
 	explicit CString(char c);
@@ -85,7 +104,41 @@ public:
 	CString(const std::string& s) : std::string(s) {}
 	CString(size_t n, char c) : std::string(n, c) {}
 	~CString() {}
-
+	
+	/**
+	 * Casts a CString to another type.  Implemented via std::stringstream, you use this
+	 * for any class that has an operator<<(std::ostream, YourClass).
+	 * @param target The object to cast into. If the cast fails, its state is unspecified.
+	 * @return True if the cast succeeds, and false if it fails.
+	 */
+	template <typename T> bool Convert(T *target) const
+	{
+		std::stringstream ss(*this);
+		ss >> *target;
+		return (bool) ss; // we don't care why it failed, only whether it failed
+	}
+	
+	/**
+	 * Joins a collection of objects together, using 'this' as a delimiter.
+	 * You can pass either pointers to arrays, or iterators to collections.
+	 * @param i_begin An iterator pointing to the beginning of a group of objects.
+	 * @param i_end An iterator pointing past the end of a group of objects.
+	 * @return The joined string
+	 */
+	template <typename Iterator> CString Join(Iterator i_start, const Iterator &i_end) const
+	{
+		if (i_start == i_end) return CString("");
+		std::ostringstream output;
+		output << *i_start;
+		while (true)
+		{
+			++i_start;
+			if (i_start == i_end) return CString(output.str());
+			output << *this;
+			output << *i_start;
+		}
+	}
+	
 	/**
 	 * Compare this string caselessly to some other string.
 	 * @param s The string to compare to.
@@ -93,7 +146,7 @@ public:
 	 * @return An integer less than, equal to, or greater than zero if this
 	 *         string smaller, equal.... to the given string.
 	 */
-	int CaseCmp(const CString& s, unsigned long uLen = CString::npos) const;
+	int CaseCmp(const CString& s, CString::size_type uLen = CString::npos) const;
 	/**
 	 * Compare this string case sensitively to some other string.
 	 * @param s The string to compare to.
@@ -101,16 +154,19 @@ public:
 	 * @return An integer less than, equal to, or greater than zero if this
 	 *         string smaller, equal.... to the given string.
 	 */
-	int StrCmp(const CString& s, unsigned long uLen = CString::npos) const;
+	int StrCmp(const CString& s, CString::size_type uLen = CString::npos) const;
 	/**
 	 * Check if this string is equal to some other string.
 	 * @param s The string to compare to.
-	 * @param bCaseSensitive True if you want the comparision to be case
-	 *                       sensitive.
-	 * @param uLen Number of characters to consider.
+	 * @param cs CaseSensitive if you want the comparision to be case
+	 *                       sensitive, CaseInsensitive (default) otherwise.
 	 * @return True if the strings are equal.
 	 */
-	bool Equals(const CString& s, bool bCaseSensitive = false, unsigned long uLen = CString::npos) const;
+	bool Equals(const CString& s, CaseSensitivity cs = CaseInsensitive) const;
+	/**
+	 * @deprecated
+	 */
+	bool Equals(const CString& s, bool bCaseSensitive, CString::size_type uLen = CString::npos) const;
 	/**
 	 * Do a wildcard comparision between two strings.
 	 * For example, the following returns true:
@@ -434,6 +490,35 @@ public:
 	 */
 	CString TrimSuffix_n(const CString& sSuffix) const;
 
+	/** Find the position of the given substring.
+	 * @param s The substring to search for.
+	 * @param cs CaseSensitive if you want the comparision to be case
+	 *                       sensitive, CaseInsensitive (default) otherwise.
+	 * @return The position of the substring if found, CString::npos otherwise.
+	 */
+	size_t Find(const CString& s, CaseSensitivity cs = CaseInsensitive) const;
+	/** Check whether the string starts with a given prefix.
+	 * @param sPrefix The prefix.
+	 * @param cs CaseSensitive if you want the comparision to be case
+	 *                       sensitive, CaseInsensitive (default) otherwise.
+	 * @return True if the string starts with prefix, false otherwise.
+	 */
+	bool StartsWith(const CString& sPrefix, CaseSensitivity cs = CaseInsensitive) const;
+	/** Check whether the string ends with a given suffix.
+	 * @param sSuffix The suffix.
+	 * @param cs CaseSensitive if you want the comparision to be case
+	 *                       sensitive, CaseInsensitive (default) otherwise.
+	 * @return True if the string ends with suffix, false otherwise.
+	 */
+	bool EndsWith(const CString& sSuffix, CaseSensitivity cs = CaseInsensitive) const;
+	/**
+	 * Check whether the string contains a given string.
+	 * @param s The string to search.
+	 * @param bCaseSensitive Whether the search is case sensitive.
+	 * @return True if this string contains the other string, falser otherwise.
+	 */
+	bool Contains(const CString& s, CaseSensitivity cs = CaseInsensitive) const;
+
 	/** Remove characters from the beginning of this string.
 	 * @param uLen The number of characters to remove.
 	 * @return true if this string was modified.
@@ -456,6 +541,19 @@ public:
 	 * @return The result of the conversion.
 	 */
 	CString RightChomp_n(size_type uLen = 1) const;
+	/** Remove controls characters from this string.
+	 * Controls characters are color codes, and those in C0 set
+	 * See https://en.wikipedia.org/wiki/C0_and_C1_control_codes
+	 * @return The result of the conversion.
+	 */
+	CString& StripControls();
+	/** Remove controls characters from this string.
+	 * Controls characters are color codes, and those in C0 set
+	 * See https://en.wikipedia.org/wiki/C0_and_C1_control_codes
+	 * This string object isn't modified.
+	 * @return The result of the conversion.
+	 */
+	CString StripControls_n() const;
 
 private:
 protected:

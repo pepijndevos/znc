@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #pragma once
@@ -45,13 +53,13 @@ public:
 	virtual void OnIRCConnectionError(CIRCSock *pIRCSock);
 	virtual EModRet OnIRCRegistration(CString& sPass, CString& sNick, CString& sIdent, CString& sRealName);
 	virtual EModRet OnBroadcast(CString& sMessage);
-	virtual void OnChanPermission(const CNick& OpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
-	virtual void OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
-	virtual void OnDeop(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
-	virtual void OnVoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
-	virtual void OnDevoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
-	virtual void OnMode(const CNick& OpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
-	virtual void OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
+	virtual void OnChanPermission2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
+	virtual void OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	virtual void OnDeop2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	virtual void OnVoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	virtual void OnDevoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	virtual void OnMode2(const CNick* pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
+	virtual void OnRawMode2(const CNick* pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
 	virtual EModRet OnRaw(CString& sLine);
 	virtual EModRet OnStatusCommand(CString& sCommand);
 	virtual void OnModCommand(const CString& sCommand);
@@ -60,6 +68,7 @@ public:
 	virtual void OnQuit(const CNick& Nick, const CString& sMessage, const std::vector<CChan*>& vChans);
 	virtual void OnNick(const CNick& Nick, const CString& sNewNick, const std::vector<CChan*>& vChans);
 	virtual void OnKick(const CNick& OpNick, const CString& sKickedNick, CChan& Channel, const CString& sMessage);
+	virtual EModRet OnJoining(CChan& Channel);
 	virtual void OnJoin(const CNick& Nick, CChan& Channel);
 	virtual void OnPart(const CNick& Nick, CChan& Channel, const CString& sMessage);
 	virtual EModRet OnChanBufferStarting(CChan& Chan, CClient& Client);
@@ -91,7 +100,11 @@ public:
 	virtual bool OnServerCapAvailable(const CString& sCap);
 	virtual void OnServerCapResult(const CString& sCap, bool bSuccess);
 	virtual EModRet OnTimerAutoJoin(CChan& Channel);
-	bool OnEmbeddedWebRequest(CWebSock&, const CString&, CTemplate&);
+	virtual bool OnEmbeddedWebRequest(CWebSock&, const CString&, CTemplate&);
+	virtual EModRet OnAddNetwork(CIRCNetwork& Network, CString& sErrorRet);
+	virtual EModRet OnDeleteNetwork(CIRCNetwork& Network);
+	virtual EModRet OnSendToClient(CString& sLine, CClient& Client);
+	virtual EModRet OnSendToIRC(CString& sLine);
 };
 
 static inline CPerlModule* AsPerlModule(CModule* p) {
@@ -153,6 +166,13 @@ inline bool HaveIPv6() {
 
 inline bool HaveSSL() {
 #ifdef HAVE_LIBSSL
+	return true;
+#endif
+	return false;
+}
+
+inline bool HaveCharset() {
+#ifdef HAVE_ICU
 	return true;
 #endif
 	return false;

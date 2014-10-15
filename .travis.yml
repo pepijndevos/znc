@@ -2,21 +2,53 @@ language: cpp
 compiler:
     - gcc
     - clang
+env:
+      matrix:
+          - CFGFLAGS= MYCXXFLAGS= MYLDFLAGS=
+      global:
+          - secure: "i2f2UVDnyHT/9z0U3XvgTj8eDERvnc1Wk7HpseEjb75JwGzqn/2R+RKHmoSrwK3hFgij2IMxZL19XtHFwMz9t5A/huAAKD74KMMI/QpeZEJ/sjT3CTLcE9HEVDdJOjc7dfLRxb2hZtgvx8clZIMrpeUdPhci8openff30KvXVbg="
+matrix:
+    include:
+        - compiler: clang
+          env: CFGFLAGS=--enable-debug MYCXXFLAGS="-fsanitize=address -O1 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fPIE" MYLDFLAGS="-fsanitize=address -pie"
+        - compiler: clang
+          env: CFGFLAGS=--enable-debug MYCXXFLAGS="-fsanitize=thread -O1 -fPIE" MYLDFLAGS="-fsanitize=thread -pie"
 before_install:
+    - cat /proc/cpuinfo /proc/meminfo
+    - if [[ "$CXX" == "g++" ]]; then sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y; fi
     - sudo apt-get update -qq
-    - sudo apt-get install -qq libperl-dev python3-dev tcl-dev libsasl2-dev
-    - ( cd ~ && wget http://prdownloads.sourceforge.net/swig/swig-2.0.8.tar.gz && tar xvf swig-2.0.8.tar.gz && cd swig-2.0.8 && ./configure && make && sudo make install )
+    - sudo apt-get install -qq libperl-dev python3-dev tcl-dev libsasl2-dev libgtest-dev libicu-dev
+    - if [[ "$CXX" == "g++" ]]; then sudo apt-get install -qq g++-4.8; fi
+    - if [[ "$CXX" == "g++" ]]; then export CXX="g++-4.8" CC="gcc-4.8"; fi
+    - apt-cache show swig
+    - ( cd ~ && wget http://prdownloads.sourceforge.net/swig/swig-3.0.2.tar.gz && tar xvf swig-3.0.2.tar.gz && cd swig-3.0.2 && ./configure && make -j3 && sudo make install )
+    - sudo apt-get install doxygen graphviz
 script:
     - ./bootstrap.sh
     - mkdir build
     - cd build
-    - ../configure --enable-perl --enable-python --enable-tcl --enable-cyrus
-    - make
+    - ../configure --enable-perl --enable-python --enable-tcl --enable-cyrus --with-gtest=/usr/src/gtest $CFGFLAGS CXXFLAGS="$CXXFLAGS $MYCXXFLAGS" LDFLAGS="$LDFLAGS $MYLDFLAGS"
+    - cat config.log
+    - make V=1 -j3
+    - make V=1 test -j3
     - sudo make install
+    - cd ..
+after_success:
+    - test -r .travis_after_all.py && python .travis_after_all.py || echo No .travis_after_all.py found
+    - test -r .to_export_back && echo $(cat .to_export_back) || echo No .to_export_back found
+    - export DUMMY_VAR=dummy-value $(cat .to_export_back)
+    - |
+          if [ "$BUILD_LEADER" == "YES" ] && [ "$BUILD_AGGREGATE_STATUS" == "others_succeeded" ] && [ "$TRAVIS_REPO_SLUG" == "znc/znc" ] && [ "$TRAVIS_PULL_REQUEST" == "false" ] && [ "$TRAVIS_BRANCH" == "master" ]; then
+              echo "All builds passed!"
+              openssl aes-256-cbc -d -in .travis-github.enc -out ~/znc-docs-key -k ${SECRET_KEY}
+              ./.travis-generate-docs.sh
+          else
+              echo "Not leader"
+          fi
 notifications:
     irc:
         channels:
             - "irc.freenode.net#znc"
-            - "irc.shoutcast.com#znc"
+            - "irc.arcti.ca#znc"
         on_success: always
         on_failure: always

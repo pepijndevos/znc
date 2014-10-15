@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef ZNCDEBUG_H
@@ -11,11 +19,7 @@
 
 #include <znc/zncconfig.h>
 #include <znc/ZNCString.h>
-#include <iostream>
-#include <ctime>
-#include <sys/time.h>
 #include <sstream>
-#include <iomanip>
 
 /** Output a debug info if debugging is enabled.
  *  If ZNC was compiled with <code>--enable-debug</code> or was started with
@@ -30,7 +34,8 @@
  */
 #define DEBUG(f) do { \
 	if (CDebug::Debug()) { \
-		std::cout << CDebug::GetTimestamp() << f << std::endl; \
+		CDebugStream sDebug;\
+		sDebug << f;\
 	} \
 } while (0)
 
@@ -40,21 +45,15 @@ public:
 	static bool StdoutIsTTY() { return stdoutIsTTY; }
 	static void SetDebug(bool b) { debug = b; }
 	static bool Debug() { return debug; }
-	static CString GetTimestamp() {
-		char buf[64];
-		timeval time_now;
-		gettimeofday(&time_now, NULL);
-		time_t currentSec = (time_t) time_now.tv_sec; // cast from long int
-		tm* time_info = localtime(&currentSec);
-		strftime(buf, sizeof(buf), "[%Y-%m-%d %H:%M:%S.", time_info);
-		std::ostringstream buffer;
-		buffer << buf << std::setw(6) << std::setfill('0') << (time_now.tv_usec) << "] ";
-		return buffer.str();
-	}
 
 protected:
 	static bool stdoutIsTTY;
 	static bool debug;
+};
+
+class CDebugStream : public std::ostringstream {
+public:
+	~CDebugStream();
 };
 
 #endif // !ZNCDEBUG_H

@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/FileUtils.h>
@@ -66,7 +74,7 @@ public:
 	}
 
 	void OnModCommand(const CString& sCommand) {
-		if (m_pUser->IsAdmin()) {
+		if (GetUser()->IsAdmin()) {
 			HandleCommand(sCommand);
 		} else {
 			PutModule("Access denied");
@@ -113,10 +121,10 @@ public:
 		// If the format doesn't contain anything expandable, we'll
 		// assume this is an "old"-style format string.
 		if (sData == GetNV("Format")) {
-			sData.Replace("%", m_pUser->GetIdent());
+			sData.Replace("%", GetUser()->GetIdent());
 		}
 
-		DEBUG("Writing [" + sData + "] to ident spoof file [" + m_pISpoofLockFile->GetLongName() + "] for user/network [" + m_pUser->GetUserName() + "/" + m_pNetwork->GetName() + "]");
+		DEBUG("Writing [" + sData + "] to ident spoof file [" + m_pISpoofLockFile->GetLongName() + "] for user/network [" + GetUser()->GetUserName() + "/" + GetNetwork()->GetName() + "]");
 
 		m_pISpoofLockFile->Write(sData + "\n");
 
@@ -172,7 +180,7 @@ public:
 	}
 
 	virtual void OnIRCConnected() {
-		if (m_pIRCSock == m_pNetwork->GetIRCSock()) {
+		if (m_pIRCSock == GetNetwork()->GetIRCSock()) {
 			ReleaseISpoof();
 		}
 	}
@@ -184,7 +192,7 @@ public:
 	}
 
 	virtual void OnIRCDisconnected() {
-		if (m_pIRCSock == m_pNetwork->GetIRCSock()) {
+		if (m_pIRCSock == GetNetwork()->GetIRCSock()) {
 			ReleaseISpoof();
 		}
 	}
@@ -194,4 +202,4 @@ template<> void TModInfo<CIdentFileModule>(CModInfo& Info) {
 	Info.SetWikiPage("identfile");
 }
 
-GLOBALMODULEDEFS(CIdentFileModule, "Write the ident of a user to a file when they are trying to connect")
+GLOBALMODULEDEFS(CIdentFileModule, "Write the ident of a user to a file when they are trying to connect.")

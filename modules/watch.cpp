@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Chan.h>
@@ -38,6 +46,8 @@ class CWatchEntry {
 public:
 	CWatchEntry(const CString& sHostMask, const CString& sTarget, const CString& sPattern) {
 		m_bDisabled = false;
+		m_bDetachedClientOnly = false;
+		m_bDetachedChannelOnly = false;
 		m_sPattern = (sPattern.size()) ? sPattern : "*";
 
 		CNick Nick;
@@ -100,6 +110,8 @@ public:
 	const CString& GetTarget() const { return m_sTarget; }
 	const CString& GetPattern() const { return m_sPattern; }
 	bool IsDisabled() const { return m_bDisabled; }
+	bool IsDetachedClientOnly() const { return m_bDetachedClientOnly; }
+	bool IsDetachedChannelOnly() const { return m_bDetachedChannelOnly; }
 	const vector<CWatchSource>& GetSources() const { return m_vsSources; }
 	CString GetSourcesStr() const {
 		CString sRet;
@@ -127,6 +139,8 @@ public:
 	void SetTarget(const CString& s) { m_sTarget = s; }
 	void SetPattern(const CString& s) { m_sPattern = s; }
 	void SetDisabled(bool b = true) { m_bDisabled = b; }
+	void SetDetachedClientOnly(bool b = true) { m_bDetachedClientOnly = b; }
+	void SetDetachedChannelOnly(bool b = true) { m_bDetachedChannelOnly = b; }
 	void SetSources(const CString& sSources) {
 		VCString vsSources;
 		VCString::iterator it;
@@ -149,6 +163,8 @@ protected:
 	CString              m_sTarget;
 	CString              m_sPattern;
 	bool                 m_bDisabled;
+	bool                 m_bDetachedClientOnly;
+	bool                 m_bDetachedChannelOnly;
 	vector<CWatchSource> m_vsSources;
 };
 
@@ -168,7 +184,7 @@ public:
 
 	virtual void OnClientLogin() {
 		MCString msParams;
-		msParams["target"] = m_pNetwork->GetCurNick();
+		msParams["target"] = GetNetwork()->GetCurNick();
 
 		size_t uSize = m_Buffer.Size();
 		for (unsigned int uIdx = 0; uIdx < uSize; uIdx++) {
@@ -263,6 +279,24 @@ public:
 			} else {
 				SetDisabled(sTok.ToUInt(), true);
 			}
+		} else if (sCmdName.Equals("SETDETACHEDCLIENTONLY")) {
+			CString sTok = sCommand.Token(1);
+			bool bDetachedClientOnly = sCommand.Token(2).ToBool();
+
+			if (sTok == "*") {
+				SetDetachedClientOnly(~0, bDetachedClientOnly);
+			} else {
+				SetDetachedClientOnly(sTok.ToUInt(), bDetachedClientOnly);
+			}
+		} else if (sCmdName.Equals("SETDETACHEDCHANNELONLY")) {
+			CString sTok = sCommand.Token(1);
+			bool bDetachedchannelOnly = sCommand.Token(2).ToBool();
+
+			if (sTok == "*") {
+				SetDetachedChannelOnly(~0, bDetachedchannelOnly);
+			} else {
+				SetDetachedChannelOnly(sTok.ToUInt(), bDetachedchannelOnly);
+			}
 		} else if (sCmdName.Equals("SETSOURCES")) {
 			SetSources(sCommand.Token(1).ToUInt(), sCommand.Token(2, true));
 		} else if (sCmdName.Equals("CLEAR")) {
@@ -287,14 +321,24 @@ public:
 private:
 	void Process(const CNick& Nick, const CString& sMessage, const CString& sSource) {
 		set<CString> sHandledTargets;
+		CIRCNetwork* pNetwork = GetNetwork();
+		CChan* pChannel = pNetwork->FindChan(sSource);
 
 		for (list<CWatchEntry>::iterator it = m_lsWatchers.begin(); it != m_lsWatchers.end(); ++it) {
 			CWatchEntry& WatchEntry = *it;
 
-			if (WatchEntry.IsMatch(Nick, sMessage, sSource, m_pNetwork) &&
+			if (pNetwork->IsUserAttached() && WatchEntry.IsDetachedClientOnly()) {
+				continue;
+			}
+
+			if (pChannel && !pChannel->IsDetached() && WatchEntry.IsDetachedChannelOnly()) {
+				continue;
+			}
+
+			if (WatchEntry.IsMatch(Nick, sMessage, sSource, pNetwork) &&
 				sHandledTargets.count(WatchEntry.GetTarget()) < 1) {
-				if (m_pNetwork->IsUserAttached()) {
-					m_pNetwork->PutUser(":" + WatchEntry.GetTarget() + "!watch@znc.in PRIVMSG " + m_pNetwork->GetCurNick() + " :" + sMessage);
+				if (pNetwork->IsUserAttached()) {
+					pNetwork->PutUser(":" + WatchEntry.GetTarget() + "!watch@znc.in PRIVMSG " + pNetwork->GetCurNick() + " :" + sMessage);
 				} else {
 					m_Buffer.AddLine(":" + _NAMEDFMT(WatchEntry.GetTarget()) + "!watch@znc.in PRIVMSG {target} :{text}", sMessage);
 				}
@@ -329,6 +373,58 @@ private:
 		Save();
 	}
 
+	void SetDetachedClientOnly(unsigned int uIdx, bool bDetachedClientOnly) {
+		if (uIdx == (unsigned int) ~0) {
+			for (list<CWatchEntry>::iterator it = m_lsWatchers.begin(); it != m_lsWatchers.end(); ++it) {
+				(*it).SetDetachedClientOnly(bDetachedClientOnly);
+			}
+
+			PutModule(CString("Set DetachedClientOnly for all entries to: ") + ((bDetachedClientOnly) ? "Yes" : "No"));
+			Save();
+			return;
+		}
+
+		uIdx--; // "convert" index to zero based
+		if (uIdx >= m_lsWatchers.size()) {
+			PutModule("Invalid Id");
+			return;
+		}
+
+		list<CWatchEntry>::iterator it = m_lsWatchers.begin();
+		for (unsigned int a = 0; a < uIdx; a++)
+			++it;
+
+		(*it).SetDetachedClientOnly(bDetachedClientOnly);
+		PutModule("Id " + CString(uIdx +1) + " set to: " + ((bDetachedClientOnly) ? "Yes" : "No"));
+		Save();
+	}
+
+	void SetDetachedChannelOnly(unsigned int uIdx, bool bDetachedChannelOnly) {
+		if (uIdx == (unsigned int) ~0) {
+			for (list<CWatchEntry>::iterator it = m_lsWatchers.begin(); it != m_lsWatchers.end(); ++it) {
+				(*it).SetDetachedChannelOnly(bDetachedChannelOnly);
+			}
+
+			PutModule(CString("Set DetachedChannelOnly for all entries to: ") + ((bDetachedChannelOnly) ? "Yes" : "No"));
+			Save();
+			return;
+		}
+
+		uIdx--; // "convert" index to zero based
+		if (uIdx >= m_lsWatchers.size()) {
+			PutModule("Invalid Id");
+			return;
+		}
+
+		list<CWatchEntry>::iterator it = m_lsWatchers.begin();
+		for (unsigned int a = 0; a < uIdx; a++)
+			++it;
+
+		(*it).SetDetachedChannelOnly(bDetachedChannelOnly);
+		PutModule("Id " + CString(uIdx +1) + " set to: " + ((bDetachedChannelOnly) ? "Yes" : "No"));
+		Save();
+	}
+
 	void List() {
 		CTable Table;
 		Table.AddColumn("Id");
@@ -337,6 +433,8 @@ private:
 		Table.AddColumn("Pattern");
 		Table.AddColumn("Sources");
 		Table.AddColumn("Off");
+		Table.AddColumn("DetachedClientOnly");
+		Table.AddColumn("DetachedChannelOnly");
 
 		unsigned int uIdx = 1;
 
@@ -350,6 +448,8 @@ private:
 			Table.SetCell("Pattern", WatchEntry.GetPattern());
 			Table.SetCell("Sources", WatchEntry.GetSourcesStr());
 			Table.SetCell("Off", (WatchEntry.IsDisabled()) ? "Off" : "");
+			Table.SetCell("DetachedClientOnly", (WatchEntry.IsDetachedClientOnly()) ? "Yes" : "No");
+			Table.SetCell("DetachedChannelOnly", (WatchEntry.IsDetachedChannelOnly()) ? "Yes" : "No");
 		}
 
 		if (Table.size()) {
@@ -383,6 +483,14 @@ private:
 
 			if (WatchEntry.IsDisabled()) {
 				PutModule("/msg " + GetModNick() + " DISABLE " + CString(uIdx));
+			}
+
+			if (WatchEntry.IsDetachedClientOnly()) {
+				PutModule("/msg " + GetModNick() + " SETDETACHEDCLIENTONLY " + CString(uIdx) + " TRUE");
+			}
+
+			if (WatchEntry.IsDetachedChannelOnly()) {
+				PutModule("/msg " + GetModNick() + " SETDETACHEDCHANNELONLY " + CString(uIdx) + " TRUE");
 			}
 		}
 
@@ -456,6 +564,14 @@ private:
 		Table.SetCell("Description", "Disable (but don't delete) an entry.");
 
 		Table.AddRow();
+		Table.SetCell("Command", "SetDetachedClientOnly <Id | *> <True | False>");
+		Table.SetCell("Description", "Enable or disable detached client only for an entry.");
+
+		Table.AddRow();
+		Table.SetCell("Command", "SetDetachedChannelOnly <Id | *> <True | False>");
+		Table.SetCell("Description", "Enable or disable detached channel only for an entry.");
+
+		Table.AddRow();
 		Table.SetCell("Command", "Buffer [Count]");
 		Table.SetCell("Description", "Show/Set the amount of buffered lines while detached.");
 
@@ -512,6 +628,8 @@ private:
 			sSave += WatchEntry.GetTarget() + "\n";
 			sSave += WatchEntry.GetPattern() + "\n";
 			sSave += (WatchEntry.IsDisabled() ? "disabled\n" : "enabled\n");
+			sSave += CString(WatchEntry.IsDetachedClientOnly()) + "\n";
+			sSave += CString(WatchEntry.IsDetachedChannelOnly()) + "\n";
 			sSave += WatchEntry.GetSourcesStr();
 			// Without this, loading fails if GetSourcesStr()
 			// returns an empty string
@@ -533,7 +651,8 @@ private:
 			VCString vList;
 			it->first.Split("\n", vList);
 
-			if (vList.size() != 5) {
+			// Backwards compatibility with the old save format
+			if (vList.size() != 5 && vList.size() != 7) {
 				bWarn = true;
 				continue;
 			}
@@ -543,7 +662,15 @@ private:
 				WatchEntry.SetDisabled(true);
 			else
 				WatchEntry.SetDisabled(false);
-			WatchEntry.SetSources(vList[4]);
+
+			// Backwards compatibility with the old save format
+			if (vList.size() == 5) {
+				WatchEntry.SetSources(vList[4]);
+			} else {
+				WatchEntry.SetDetachedClientOnly(vList[4].ToBool());
+				WatchEntry.SetDetachedChannelOnly(vList[5].ToBool());
+				WatchEntry.SetSources(vList[6]);
+			}
 			m_lsWatchers.push_back(WatchEntry);
 		}
 

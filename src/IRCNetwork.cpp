@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCNetwork.h>
@@ -13,9 +21,63 @@
 #include <znc/IRCSock.h>
 #include <znc/Server.h>
 #include <znc/Chan.h>
+#include <znc/Query.h>
 
 using std::vector;
 using std::set;
+
+class CIRCNetworkPingTimer : public CCron {
+public:
+	CIRCNetworkPingTimer(CIRCNetwork *pNetwork) : CCron() {
+		m_pNetwork = pNetwork;
+		SetName("CIRCNetworkPingTimer::" + m_pNetwork->GetUser()->GetUserName() + "::" + m_pNetwork->GetName());
+		Start(CIRCNetwork::PING_SLACK);
+	}
+
+	virtual ~CIRCNetworkPingTimer() {}
+
+protected:
+	virtual void RunJob() {
+		CIRCSock* pIRCSock = m_pNetwork->GetIRCSock();
+
+		if (pIRCSock && pIRCSock->GetTimeSinceLastDataTransaction() >= CIRCNetwork::PING_FREQUENCY) {
+			pIRCSock->PutIRC("PING :ZNC");
+		}
+
+		const vector<CClient*>& vClients = m_pNetwork->GetClients();
+		for (size_t b = 0; b < vClients.size(); b++) {
+			CClient* pClient = vClients[b];
+
+			if (pClient->GetTimeSinceLastDataTransaction() >= CIRCNetwork::PING_FREQUENCY) {
+				pClient->PutClient("PING :ZNC");
+			}
+		}
+	}
+
+private:
+	CIRCNetwork* m_pNetwork;
+};
+
+class CIRCNetworkJoinTimer : public CCron {
+public:
+	CIRCNetworkJoinTimer(CIRCNetwork *pNetwork) : CCron() {
+		m_pNetwork = pNetwork;
+		SetName("CIRCNetworkJoinTimer::" + m_pNetwork->GetUser()->GetUserName() + "::" + m_pNetwork->GetName());
+		Start(30);
+	}
+
+	virtual ~CIRCNetworkJoinTimer() {}
+
+protected:
+	virtual void RunJob() {
+		if (m_pNetwork->IsIRCConnected()) {
+			m_pNetwork->JoinChans();
+		}
+	}
+
+private:
+	CIRCNetwork* m_pNetwork;
+};
 
 bool CIRCNetwork::IsValidNetwork(const CString& sNetwork) {
 	// ^[-\w]+$
@@ -48,13 +110,20 @@ CIRCNetwork::CIRCNetwork(CUser *pUser, const CString& sName) {
 
 	m_sChanPrefixes = "";
 	m_bIRCAway = false;
+	m_sEncoding = "";
 
 	m_fFloodRate = 1;
 	m_uFloodBurst = 4;
 
 	m_RawBuffer.SetLineCount(100, true);   // This should be more than enough raws, especially since we are buffering the MOTD separately
 	m_MotdBuffer.SetLineCount(200, true);  // This should be more than enough motd lines
-	m_QueryBuffer.SetLineCount(250, true);
+	m_NoticeBuffer.SetLineCount(250, true);
+
+	m_pPingTimer = new CIRCNetworkPingTimer(this);
+	CZNC::Get().GetManager().AddCron(m_pPingTimer);
+
+	m_pJoinTimer = new CIRCNetworkJoinTimer(this);
+	CZNC::Get().GetManager().AddCron(m_pJoinTimer);
 
 	SetIRCConnectEnabled(true);
 }
@@ -70,10 +139,11 @@ CIRCNetwork::CIRCNetwork(CUser *pUser, const CIRCNetwork &Network) {
 
 	m_sChanPrefixes = "";
 	m_bIRCAway = false;
+	m_sEncoding = "";
 
 	m_RawBuffer.SetLineCount(100, true);   // This should be more than enough raws, especially since we are buffering the MOTD separately
 	m_MotdBuffer.SetLineCount(200, true);  // This should be more than enough motd lines
-	m_QueryBuffer.SetLineCount(250, true);
+	m_NoticeBuffer.SetLineCount(250, true);
 
 	Clone(Network);
 }
@@ -91,6 +161,8 @@ void CIRCNetwork::Clone(const CIRCNetwork& Network, bool bCloneName) {
 	SetIdent(Network.GetIdent());
 	SetRealName(Network.GetRealName());
 	SetBindHost(Network.GetBindHost());
+	SetEncoding(Network.GetEncoding());
+	SetQuitMsg(Network.GetQuitMsg());
 
 	// Servers
 	const vector<CServer*>& vServers = Network.GetServers();
@@ -211,10 +283,19 @@ CIRCNetwork::~CIRCNetwork() {
 	}
 	m_vChans.clear();
 
+	// Delete Queries
+	for (vector<CQuery*>::const_iterator it = m_vQueries.begin(); it != m_vQueries.end(); ++it) {
+		delete *it;
+	}
+	m_vQueries.clear();
+
 	SetUser(NULL);
 
 	// Make sure we are not in the connection queue
 	CZNC::Get().GetConnectionQueue().remove(this);
+
+	CZNC::Get().GetManager().DelCronByAddr(m_pPingTimer);
+	CZNC::Get().GetManager().DelCronByAddr(m_pJoinTimer);
 }
 
 void CIRCNetwork::DelServers() {
@@ -224,7 +305,7 @@ void CIRCNetwork::DelServers() {
 	m_vServers.clear();
 }
 
-CString CIRCNetwork::GetNetworkPath() {
+CString CIRCNetwork::GetNetworkPath() const {
 	CString sNetworkPath = m_pUser->GetUserPath() + "/networks/" + m_sName;
 
 	if (!CFile::Exists(sNetworkPath)) {
@@ -251,6 +332,8 @@ bool CIRCNetwork::ParseConfig(CConfig *pConfig, CString& sError, bool bUpgrade) 
 			{ "ident", &CIRCNetwork::SetIdent },
 			{ "realname", &CIRCNetwork::SetRealName },
 			{ "bindhost", &CIRCNetwork::SetBindHost },
+			{ "encoding", &CIRCNetwork::SetEncoding },
+			{ "quitmsg", &CIRCNetwork::SetQuitMsg },
 		};
 		size_t numStringOptions = sizeof(StringOptions) / sizeof(StringOptions[0]);
 		TOption<bool> BoolOptions[] = {
@@ -309,6 +392,12 @@ bool CIRCNetwork::ParseConfig(CConfig *pConfig, CString& sError, bool bUpgrade) 
 						"loading [awaystore] instead");
 				sModName = "awaystore";
 			}
+		
+			// XXX Legacy crap, added in 1.1; fakeonline module was dropped in 1.0 and returned in 1.1
+			if (sModName == "fakeonline") {
+				CUtils::PrintMessage("NOTICE: [fakeonline] was renamed, loading [modules_online] instead");
+				sModName = "modules_online";
+			}
 
 			CUtils::PrintAction("Loading network module [" + sModName + "]");
 			CString sModRet;
@@ -366,7 +455,7 @@ bool CIRCNetwork::ParseConfig(CConfig *pConfig, CString& sError, bool bUpgrade) 
 	return true;
 }
 
-CConfig CIRCNetwork::ToConfig() {
+CConfig CIRCNetwork::ToConfig() const {
 	CConfig config;
 
 	if (!m_sNick.empty()) {
@@ -391,9 +480,14 @@ CConfig CIRCNetwork::ToConfig() {
 	config.AddKeyValuePair("IRCConnectEnabled", CString(GetIRCConnectEnabled()));
 	config.AddKeyValuePair("FloodRate", CString(GetFloodRate()));
 	config.AddKeyValuePair("FloodBurst", CString(GetFloodBurst()));
+	config.AddKeyValuePair("Encoding", m_sEncoding);
+
+	if (!m_sQuitMsg.empty()) {
+		config.AddKeyValuePair("QuitMsg", m_sQuitMsg);
+	}
 
 	// Modules
-	CModules& Mods = GetModules();
+	const CModules& Mods = GetModules();
 
 	if (!Mods.empty()) {
 		for (unsigned int a = 0; a < Mods.size(); a++) {
@@ -508,15 +602,26 @@ void CIRCNetwork::ClientConnected(CClient *pClient) {
 		}
 	}
 
-	uSize = m_QueryBuffer.Size();
+	bool bClearQuery = m_pUser->AutoClearQueryBuffer();
+	for (vector<CQuery*>::const_iterator it = m_vQueries.begin(); it != m_vQueries.end(); ++it) {
+		(*it)->SendBuffer(pClient);
+		if (bClearQuery) {
+			delete *it;
+		}
+	}
+	if (bClearQuery) {
+		m_vQueries.clear();
+	}
+
+	uSize = m_NoticeBuffer.Size();
 	for (uIdx = 0; uIdx < uSize; uIdx++) {
-		CString sLine = m_QueryBuffer.GetLine(uIdx, *pClient, msParams);
+		CString sLine = m_NoticeBuffer.GetLine(uIdx, *pClient, msParams);
 		bool bContinue = false;
 		NETWORKMODULECALL(OnPrivBufferPlayLine(*pClient, sLine), m_pUser, this, NULL, &bContinue);
 		if (bContinue) continue;
 		pClient->PutClient(sLine);
 	}
-	m_QueryBuffer.Clear();
+	m_NoticeBuffer.Clear();
 
 	// Tell them why they won't connect
 	if (!GetIRCConnectEnabled())
@@ -533,7 +638,7 @@ void CIRCNetwork::ClientDisconnected(CClient *pClient) {
 	}
 }
 
-CUser* CIRCNetwork::GetUser() {
+CUser* CIRCNetwork::GetUser() const {
 	return m_pUser;
 }
 
@@ -616,7 +721,8 @@ const vector<CChan*>& CIRCNetwork::GetChans() const { return m_vChans; }
 
 CChan* CIRCNetwork::FindChan(CString sName) const {
 	if (GetIRCSock()) {
-		sName.TrimLeft(GetIRCSock()->GetPerms());
+		// See https://tools.ietf.org/html/draft-brocklesby-irc-isupport-03#section-3.16
+		sName.TrimLeft(GetIRCSock()->GetISupport("STATUSMSG", ""));
 	}
 
 	for (unsigned int a = 0; a < m_vChans.size(); a++) {
@@ -627,6 +733,16 @@ CChan* CIRCNetwork::FindChan(CString sName) const {
 	}
 
 	return NULL;
+}
+
+std::vector<CChan*> CIRCNetwork::FindChans(const CString& sWild) const {
+	std::vector<CChan*> vChans;
+	vChans.reserve(m_vChans.size());
+	for (std::vector<CChan*>::const_iterator it = m_vChans.begin(); it != m_vChans.end(); ++it) {
+		if ((*it)->GetName().WildCmp(sWild))
+			vChans.push_back(*it);
+	}
+	return vChans;
 }
 
 bool CIRCNetwork::AddChan(CChan* pChan) {
@@ -668,49 +784,79 @@ bool CIRCNetwork::DelChan(const CString& sName) {
 }
 
 void CIRCNetwork::JoinChans() {
+	// Avoid divsion by zero, it's bad!
+	if (m_vChans.empty())
+		return;
+
+	// We start at a random offset into the channel list so that if your
+	// first 3 channels are invite-only and you got MaxJoins == 3, ZNC will
+	// still be able to join the rest of your channels.
+	unsigned int start = rand() % m_vChans.size();
+	unsigned int uJoins = m_pUser->MaxJoins();
+	set<CChan*> sChans;
+	for (unsigned int a = 0; a < m_vChans.size(); a++) {
+		unsigned int idx = (start + a) % m_vChans.size();
+		CChan* pChan = m_vChans[idx];
+		if (!pChan->IsOn() && !pChan->IsDisabled()) {
+			if (!JoinChan(pChan))
+				continue;
+
+			sChans.insert(pChan);
+
+			// Limit the number of joins
+			if (uJoins != 0 && --uJoins == 0) {
+				// Reset the timer.
+				m_pJoinTimer->Reset();
+				break;
+			}
+		}
+	}
+
+	while (!sChans.empty())
+		JoinChans(sChans);
+}
+
+void CIRCNetwork::JoinChans(set<CChan*>& sChans) {
+	CString sKeys, sJoin;
 	bool bHaveKey = false;
-	size_t joinLength = 4;  // join
-	CString sChannels, sKeys;
+	size_t uiJoinLength = strlen("JOIN ");
 
-	for (vector<CChan*>::iterator it = m_vChans.begin(); it != m_vChans.end(); ++it) {
-		CChan *pChan = *it;
+	while (!sChans.empty()) {
+		set<CChan*>::iterator it = sChans.begin();
+		const CString& sName = (*it)->GetName();
+		const CString& sKey = (*it)->GetKey();
+		size_t len = sName.length() + sKey.length();
+		len += 2; // two comma
 
-		if (pChan->IsOn() || pChan->IsDisabled() || !JoinChan(pChan)) {
-			continue;
-		}
+		if (!sKeys.empty() && uiJoinLength + len >= 512)
+			break;
 
-		size_t length = pChan->GetName().length() + pChan->GetKey().length() + 2;  // +2 for either space or commas
-
-		if ((joinLength + length) >= 510) {
-			// Sent what we got, and cleanup
-			PutIRC("JOIN " + sChannels + (bHaveKey ? (" " + sKeys) : ""));
-
-			sChannels = "";
-			sKeys = "";
-			joinLength = 4;  // join
-			bHaveKey = false;
-		}
-
-		if (!sChannels.empty()) {
-			sChannels += ",";
+		if (!sJoin.empty()) {
+			sJoin += ",";
 			sKeys += ",";
 		}
-
-		if (!pChan->GetKey().empty()) {
+		uiJoinLength += len;
+		sJoin += sName;
+		if (!sKey.empty()) {
+			sKeys += sKey;
 			bHaveKey = true;
-			sKeys += pChan->GetKey();
 		}
-
-		sChannels += pChan->GetName();
-		joinLength += length;
+		sChans.erase(it);
 	}
 
-	if (!sChannels.empty()) {
-		PutIRC("JOIN " + sChannels + (bHaveKey ? (" " + sKeys) : ""));
-	}
+	if (bHaveKey)
+		PutIRC("JOIN " + sJoin + " " + sKeys);
+	else
+		PutIRC("JOIN " + sJoin);
 }
 
 bool CIRCNetwork::JoinChan(CChan* pChan) {
+	bool bReturn = false;
+	NETWORKMODULECALL(OnJoining(*pChan), m_pUser, this, NULL, &bReturn);
+
+	if (bReturn)
+		return false;
+
 	if (m_pUser->JoinTries() != 0 && pChan->GetJoinTries() >= m_pUser->JoinTries()) {
 		PutStatus("The channel " + pChan->GetName() + " could not be joined, disabling it.");
 		pChan->Disable();
@@ -731,6 +877,64 @@ bool CIRCNetwork::IsChan(const CString& sChan) const {
 		return true; // We can't know, so we allow everything
 	// Thanks to the above if (empty), we can do sChan[0]
 	return GetChanPrefixes().find(sChan[0]) != CString::npos;
+}
+
+// Queries
+
+const vector<CQuery*>& CIRCNetwork::GetQueries() const { return m_vQueries; }
+
+CQuery* CIRCNetwork::FindQuery(const CString& sName) const {
+	for (unsigned int a = 0; a < m_vQueries.size(); a++) {
+		CQuery* pQuery = m_vQueries[a];
+		if (sName.Equals(pQuery->GetName())) {
+			return pQuery;
+		}
+	}
+
+	return NULL;
+}
+
+std::vector<CQuery*> CIRCNetwork::FindQueries(const CString& sWild) const {
+	std::vector<CQuery*> vQueries;
+	vQueries.reserve(m_vQueries.size());
+	for (std::vector<CQuery*>::const_iterator it = m_vQueries.begin(); it != m_vQueries.end(); ++it) {
+		if ((*it)->GetName().WildCmp(sWild))
+			vQueries.push_back(*it);
+	}
+	return vQueries;
+}
+
+CQuery* CIRCNetwork::AddQuery(const CString& sName) {
+	if (sName.empty()) {
+		return NULL;
+	}
+
+	CQuery* pQuery = FindQuery(sName);
+	if (!pQuery) {
+		pQuery = new CQuery(sName, this);
+		m_vQueries.push_back(pQuery);
+
+		if (m_pUser->MaxQueryBuffers() > 0) {
+			while (m_vQueries.size() > m_pUser->MaxQueryBuffers()) {
+				delete *m_vQueries.begin();
+				m_vQueries.erase(m_vQueries.begin());
+			}
+		}
+	}
+
+	return pQuery;
+}
+
+bool CIRCNetwork::DelQuery(const CString& sName) {
+	for (vector<CQuery*>::iterator a = m_vQueries.begin(); a != m_vQueries.end(); ++a) {
+		if (sName.Equals((*a)->GetName())) {
+			delete *a;
+			m_vQueries.erase(a);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 // Server list
@@ -940,6 +1144,7 @@ bool CIRCNetwork::Connect() {
 		return false;
 
 	if (CZNC::Get().GetServerThrottle(pServer->GetName())) {
+		// Can't connect right now, schedule retry later
 		CZNC::Get().AddNetworkToQueue(this);
 		return false;
 	}
@@ -1066,6 +1271,18 @@ const CString& CIRCNetwork::GetBindHost() const {
 	return m_sBindHost;
 }
 
+const CString& CIRCNetwork::GetEncoding() const {
+	return m_sEncoding;
+}
+
+CString CIRCNetwork::GetQuitMsg() const {
+	if (m_sQuitMsg.empty()) {
+		return m_pUser->GetQuitMsg();
+	}
+
+	return m_sQuitMsg;
+}
+
 void CIRCNetwork::SetNick(const CString& s) {
 	if (m_pUser->GetNick().Equals(s)) {
 		m_sNick = "";
@@ -1103,6 +1320,18 @@ void CIRCNetwork::SetBindHost(const CString& s) {
 		m_sBindHost = "";
 	} else {
 		m_sBindHost = s;
+	}
+}
+
+void CIRCNetwork::SetEncoding(const CString& s) {
+	m_sEncoding = s;
+}
+
+void CIRCNetwork::SetQuitMsg(const CString& s) {
+	if (m_pUser->GetQuitMsg().Equals(s)) {
+		m_sQuitMsg = "";
+	} else {
+		m_sQuitMsg = s;
 	}
 }
 

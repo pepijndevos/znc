@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/FileUtils.h>
@@ -57,21 +65,29 @@ unsigned char* CString::strnchr(const unsigned char* src, unsigned char c, unsig
 	return NULL;
 }
 
-int CString::CaseCmp(const CString& s, unsigned long uLen) const {
+int CString::CaseCmp(const CString& s, CString::size_type uLen) const {
 	if (uLen != CString::npos) {
 		return strncasecmp(c_str(), s.c_str(), uLen);
 	}
 	return strcasecmp(c_str(), s.c_str());
 }
 
-int CString::StrCmp(const CString& s, unsigned long uLen) const {
+int CString::StrCmp(const CString& s, CString::size_type uLen) const {
 	if (uLen != CString::npos) {
 		return strncmp(c_str(), s.c_str(), uLen);
 	}
 	return strcmp(c_str(), s.c_str());
 }
 
-bool CString::Equals(const CString& s, bool bCaseSensitive, unsigned long uLen) const {
+bool CString::Equals(const CString& s, CaseSensitivity cs) const {
+	if (cs == CaseSensitive) {
+		return (StrCmp(s) == 0);
+	} else {
+		return (CaseCmp(s) == 0);
+	}
+}
+
+bool CString::Equals(const CString& s, bool bCaseSensitive, CString::size_type uLen) const {
 	if (bCaseSensitive) {
 		return (StrCmp(s, uLen) == 0);
 	} else {
@@ -164,6 +180,10 @@ CString::EEscape CString::ToEscape(const CString& sEsc) {
 		return ESQL;
 	} else if (sEsc.Equals("NAMEDFMT")) {
 		return ENAMEDFMT;
+	} else if (sEsc.Equals("DEBUG")) {
+		return EDEBUG;
+	} else if (sEsc.Equals("MSGTAG")) {
+		return EMSGTAG;
 	}
 
 	return EASCII;
@@ -280,6 +300,57 @@ CString CString::Escape_n(EEscape eFrom, EEscape eTo) const {
 				}
 
 				break;
+			case EDEBUG:
+				if (*p == '\\' && (a +3) < iLength && *(p +1) == 'x' && isxdigit(*(p +2)) && isxdigit(*(p +3))) {
+					p += 2;
+					if (isdigit(*p)) {
+						ch = (unsigned char)((*p - '0') << 4);
+					} else {
+						ch = (unsigned char)((tolower(*p) - 'a' +10) << 4);
+					}
+
+					p++;
+					if (isdigit(*p)) {
+						ch |= (unsigned char)(*p - '0');
+					} else {
+						ch |= (unsigned char)(tolower(*p) - 'a' +10);
+					}
+
+					a += 3;
+				} else if (*p == '\\' && a+1 < iLength && *(p+1) == '.') {
+					a++;
+					p++;
+					ch = '\\';
+				} else {
+					ch = *p;
+				}
+
+				break;
+			case EMSGTAG:
+				if (*p != '\\' || iLength < (a +1)) {
+					ch = *p;
+				} else {
+					a++;
+					p++;
+
+					if (*p == ':') {
+						ch = ';';
+					} else if (*p == 's') {
+						ch = ' ';
+					} else if (*p == '0') {
+						ch = '\0';
+					} else if (*p == '\\') {
+						ch = '\\';
+					} else if (*p == 'r') {
+						ch = '\r';
+					} else if (*p == 'n') {
+						ch = '\n';
+					} else {
+						ch = *p;
+					}
+				}
+
+				break;
 		}
 
 		switch (eTo) {
@@ -324,6 +395,28 @@ CString CString::Escape_n(EEscape eFrom, EEscape eTo) const {
 				if (ch == '\\') { sRet += '\\'; sRet += '\\';
 				} else if (ch == '{') { sRet += '\\'; sRet += '{';
 				} else if (ch == '}') { sRet += '\\'; sRet += '}';
+				} else { sRet += ch; }
+
+				break;
+			case EDEBUG:
+				if (ch < 0x20 || ch == 0x7F) {
+					sRet += "\\x";
+					sRet += szHex[ch >> 4];
+					sRet += szHex[ch & 0xf];
+				} else if (ch == '\\') {
+					sRet += "\\.";
+				} else {
+					sRet += ch;
+				}
+
+				break;
+			case EMSGTAG:
+				if (ch == ';') { sRet += '\\'; sRet += ':';
+				} else if (ch == ' ') { sRet += '\\'; sRet += 's';
+				} else if (ch == '\0') { sRet += '\\'; sRet += '0';
+				} else if (ch == '\\') { sRet += '\\'; sRet += '\\';
+				} else if (ch == '\r') { sRet += '\\'; sRet += 'r';
+				} else if (ch == '\n') { sRet += '\\'; sRet += 'n';
 				} else { sRet += ch; }
 
 				break;
@@ -1046,6 +1139,26 @@ bool CString::TrimSuffix(const CString& sSuffix) {
 	}
 }
 
+size_t CString::Find(const CString& s, CaseSensitivity cs) const {
+	if (cs == CaseSensitive) {
+		return find(s);
+	} else {
+		return AsLower().find(s.AsLower());
+	}
+}
+
+bool CString::StartsWith(const CString& sPrefix, CaseSensitivity cs) const {
+	return Left(sPrefix.length()).Equals(sPrefix, cs);
+}
+
+bool CString::EndsWith(const CString& sSuffix, CaseSensitivity cs) const {
+	return Right(sSuffix.length()).Equals(sSuffix, cs);
+}
+
+bool CString::Contains(const CString& s, CaseSensitivity cs) const {
+	return Find(s, cs) != npos;
+}
+
 
 CString CString::TrimPrefix_n(const CString& sPrefix) const {
 	CString sRet = *this;
@@ -1091,6 +1204,58 @@ bool CString::RightChomp(size_type uLen) {
 	}
 
 	return bRet;
+}
+
+CString CString::StripControls_n() const {
+	CString sRet;
+	const unsigned char *pStart = (const unsigned char*) data();
+	unsigned char ch = *pStart;
+	size_type iLength = length();
+	sRet.reserve(iLength);
+	bool colorCode = false;
+	unsigned int digits = 0;
+	bool comma = false;
+
+	for (unsigned int a = 0; a < iLength; a++, ch = pStart[a]) {
+		// Color code. Format: \x03([0-9]{1,2}(,[0-9]{1,2})?)?
+		if (ch == 0x03) {
+			colorCode = true;
+			digits = 0;
+			comma = false;
+			continue;
+		}
+		if (colorCode) {
+			if (isdigit(ch) && digits < 2) {
+				digits++;
+				continue;
+			}
+			if (ch == ',' && !comma && digits > 0) {
+				comma = true;
+				digits = 0;
+				continue;
+			}
+
+			colorCode = false;
+
+			if (digits == 0 && comma) { // There was a ',' which wasn't followed by digits, we should print it.
+				sRet += ',';
+			}
+		}
+		// CO controls codes
+		if (ch < 0x20 || ch == 0x7F)
+			continue;
+		sRet += ch;
+	}
+	if (colorCode && digits == 0 && comma) {
+		sRet += ',';
+	}
+
+	sRet.reserve(0);
+	return sRet;
+}
+
+CString& CString::StripControls() {
+	return (*this = StripControls_n());
 }
 
 //////////////// MCString ////////////////

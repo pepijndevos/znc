@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Chan.h>
@@ -27,11 +35,11 @@ public:
 		{
 			if (sChannel.Equals(it->first))
 			{
-				CChan* pChan = m_pNetwork->FindChan(sChannel);
+				CChan* pChan = GetNetwork()->FindChan(sChannel);
 
 				if (pChan)
 				{
-					pChan->JoinUser(true, "", m_pClient);
+					pChan->JoinUser(true, "", GetClient());
 					return HALT;
 				}
 			}
@@ -78,24 +86,25 @@ public:
 
 	virtual void RunJob()
 	{
-		if (!m_pNetwork->GetIRCSock())
+		CIRCNetwork* pNetwork = GetNetwork();
+		if (!pNetwork->GetIRCSock())
 			return;
 
 		for (MCString::iterator it = BeginNV(); it != EndNV(); ++it)
 		{
-			CChan *pChan = m_pNetwork->FindChan(it->first);
+			CChan *pChan = pNetwork->FindChan(it->first);
 			if (!pChan) {
-				pChan = new CChan(it->first, m_pNetwork, true);
+				pChan = new CChan(it->first, pNetwork, true);
 				if (!it->second.empty())
 					pChan->SetKey(it->second);
-				if (!m_pNetwork->AddChan(pChan)) {
+				if (!pNetwork->AddChan(pChan)) {
 					/* AddChan() deleted that channel */
 					PutModule("Could not join [" + it->first
 							+ "] (# prefix missing?)");
 					continue;
 				}
 			}
-			if (!pChan->IsOn()) {
+			if (!pChan->IsOn() && pNetwork->IsIRCConnected()) {
 				PutModule("Joining [" + pChan->GetName() + "]");
 				PutIRC("JOIN " + pChan->GetName() + (pChan->GetKey().empty()
 							? "" : " " + pChan->GetKey()));
@@ -109,7 +118,7 @@ public:
 		if (sPageName == "index") {
 			bool bSubmitted = (WebSock.GetParam("submitted").ToInt() != 0);
 
-			const vector<CChan*>& Channels = m_pNetwork->GetChans();
+			const vector<CChan*>& Channels = GetNetwork()->GetChans();
 			for (unsigned int c = 0; c < Channels.size(); c++) {
 				const CString sChan = Channels[c]->GetName();
 				bool bStick = FindNV(sChan) != EndNV();

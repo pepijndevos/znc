@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/Chan.h>
@@ -134,7 +142,7 @@ protected:
 
 		// Is that person us and we don't have op?
 		const CNick& pNick = Channel.GetNicks().begin()->second;
-		if (!pNick.HasPerm(CChan::Op) && pNick.GetNick().Equals(m_pNetwork->GetCurNick())) {
+		if (!pNick.HasPerm(CChan::Op) && pNick.NickEquals(GetNetwork()->GetCurNick())) {
 			Channel.Cycle();
 			m_recentlyCycled.AddItem(Channel.GetName());
 		}
@@ -242,4 +250,4 @@ template<> void TModInfo<CAutoCycleMod>(CModInfo& Info) {
 	Info.SetArgsHelpText("List of channel masks and channel masks with ! before them.");
 }
 
-USERMODULEDEFS(CAutoCycleMod, "Rejoins channels to gain Op if you're the only user left")
+NETWORKMODULEDEFS(CAutoCycleMod, "Rejoins channels to gain Op if you're the only user left")

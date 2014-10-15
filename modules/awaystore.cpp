@@ -1,12 +1,22 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
- * Quiet Away and message logger
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  * Author: imaginos <imaginos@imaginos.net>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * Quiet Away and message logger
  *
  * I originally wrote this module for when I had multiple clients connected to ZNC. I would leave work and forget to close my client, arriving at home
  * and re-attaching there someone may have messaged me in commute and I wouldn't know it until I would arrive back at work the next day. I wrote it such that
@@ -43,12 +53,14 @@ class CAway : public CModule
 {
 	void AwayCommand(const CString& sCommand) {
 		CString sReason;
+		time_t curtime;
+		time(&curtime);
 
 		if (sCommand.Token(1) != "-quiet") {
-			sReason = sCommand.Token(1, true);
+			sReason = CUtils::FormatTime(curtime, sCommand.Token(1, true), GetUser()->GetTimezone());
 			PutModNotice("You have been marked as away");
 		} else {
-			sReason = sCommand.Token(2, true);
+			sReason = CUtils::FormatTime(curtime, sCommand.Token(2, true), GetUser()->GetTimezone());
 		}
 
 		Away(false, sReason);
@@ -57,6 +69,7 @@ class CAway : public CModule
 	void BackCommand(const CString& sCommand) {
 		if ((m_vMessages.empty()) && (sCommand.Token(1) != "-quiet"))
 			PutModNotice("Welcome Back!");
+		Ping();
 		Back();
 	}
 
@@ -327,7 +340,7 @@ public:
 
 	CString GetPath()
 	{
-		CString sBuffer = m_pUser->GetUserName();
+		CString sBuffer = GetUser()->GetUserName();
 		CString sRet = GetSavePath();
 		sRet += "/.znc-away-" + CBlowfish::MD5(sBuffer, true);
 		return(sRet);
@@ -384,6 +397,14 @@ public:
 		return(CONTINUE);
 	}
 
+	virtual EModRet OnPrivAction(CNick& Nick, CString& sMessage)
+	{
+		if (m_bIsAway) {
+			AddMessage(time(NULL), Nick, "* " + sMessage);
+		}
+		return(CONTINUE);
+	}
+
 	virtual EModRet OnUserNotice(CString& sTarget, CString& sMessage)
 	{
 		Ping();
@@ -392,7 +413,17 @@ public:
 
 		return(CONTINUE);
 	}
+
 	virtual EModRet OnUserMsg(CString& sTarget, CString& sMessage)
+	{
+		Ping();
+		if (m_bIsAway)
+			Back();
+
+		return(CONTINUE);
+	}
+
+	virtual EModRet OnUserAction(CString& sTarget, CString& sMessage)
 	{
 		Ping();
 		if (m_bIsAway)
@@ -443,9 +474,9 @@ private:
 		return(true);
 	}
 
-	void AddMessage(time_t iTime, const CNick & Nick, CString & sMessage)
+	void AddMessage(time_t iTime, const CNick & Nick, const CString & sMessage)
 	{
-		if (Nick.GetNick() == m_pNetwork->GetIRCNick().GetNick())
+		if (Nick.GetNick() == GetNetwork()->GetIRCNick().GetNick())
 			return; // ignore messages from self
 		AddMessage(CString(iTime) + " " + Nick.GetNickMask() + " " + sMessage);
 	}
@@ -469,7 +500,7 @@ private:
 
 void CAwayJob::RunJob()
 {
-	CAway *p = (CAway *)m_pModule;
+	CAway *p = (CAway *)GetModule();
 	p->SaveBufferToDisk();
 
 	if (!p->IsAway())

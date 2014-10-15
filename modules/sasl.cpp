@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCNetwork.h>
@@ -20,8 +28,8 @@ static const struct {
 } SupportedMechanisms[] = {
 	{ "EXTERNAL",           "TLS certificate, for use with the *cert module", false },
 #ifdef HAVE_SASL_MECHANISM
-	{ "DH-BLOWFISH",        "Secure negotiation using the DH-BLOWFISH mechanism", true },
-	{ "DH-AES",		"More secure negotiation using the DH-AES mechanism", true },
+	{ "DH-BLOWFISH",        "Secure negotiation using the DH-BLOWFISH mechanism", false },
+	{ "DH-AES",		"More secure negotiation using the DH-AES mechanism", false },
 #endif
 	{ "PLAIN",              "Plain text negotiation", true },
 	{ NULL, NULL, false }
@@ -114,7 +122,9 @@ public:
 		}
 
 		/* Prime number */
-		unsigned int size = ntohs(*(uint16_t*)data);
+		uint16_t size16;
+		memcpy(&size16, data, sizeof(size16));
+		unsigned int size = ntohs(size16);
 		data += 2;
 		length -= 2;
 
@@ -132,7 +142,8 @@ public:
 			return false;
 		}
 
-		size = ntohs(*(uint16_t*)data);
+		memcpy(&size16, data, sizeof(size16));
+		size = ntohs(size16);
 		data += 2;
 		length -= 2;
 
@@ -145,7 +156,13 @@ public:
 		data += size;
 
 		/* Server public key */
-		size = ntohs(*(uint16_t*)data);
+		if (length < 2) {
+			DEBUG("sasl: No public key");
+			return false;
+		}
+
+		memcpy(&size16, data, sizeof(size16));
+		size = ntohs(size16);
 		data += 2;
 		length -= 2;
 
@@ -202,7 +219,7 @@ public:
 			Mechanisms.SetCell("Description", SupportedMechanisms[i].szDescription);
 		}
 
-		PutModule("The following mechanisms are availible:");
+		PutModule("The following mechanisms are available:");
 		PutModule(Mechanisms);
 	}
 
@@ -348,7 +365,8 @@ public:
 		char *out_ptr = response;
 
 		/* Size of the key + key */
-		*((uint16_t *)out_ptr) = htons((uint16_t)dh.key_size);
+		uint16_t size16 = htons((uint16_t)dh.key_size);
+		memcpy(out_ptr, &size16, sizeof(size16));
 		out_ptr += 2;
 		BN_bn2bin(dh.dh->pub_key, (unsigned char *)out_ptr);
 		out_ptr += dh.key_size;
@@ -417,7 +435,8 @@ public:
 		out_ptr = response;
 
 		/* Add our key to the response */
-		*((uint16_t *)out_ptr) = htons((uint16_t)BN_num_bytes(dh.dh->pub_key));
+		uint16_t size16 = htons((uint16_t)BN_num_bytes(dh.dh->pub_key));
+		memcpy(out_ptr, &size16, sizeof(size16));
 		out_ptr += 2;
 		BN_bn2bin(dh.dh->pub_key, (unsigned char *)out_ptr);
 		out_ptr += BN_num_bytes(dh.dh->pub_key);
@@ -459,7 +478,7 @@ public:
 		return sCap.Equals("sasl");
 	}
 
-	virtual void OnServerCapResult(const CString& sCap, const bool bSuccess) {
+	virtual void OnServerCapResult(const CString& sCap, bool bSuccess) {
 		if (sCap.Equals("sasl")) {
 			if (bSuccess) {
 				GetMechanismsString().Split(" ", m_Mechanisms);
@@ -469,7 +488,7 @@ public:
 					return;
 				}
 
-				m_pNetwork->GetIRCSock()->PauseCap();
+				GetNetwork()->GetIRCSock()->PauseCap();
 
 				m_Mechanisms.SetIndex(0);
 				PutIRC("AUTHENTICATE " + m_Mechanisms.GetCurrent());
@@ -484,7 +503,7 @@ public:
 			Authenticate(sLine.Token(1, true));
 		} else if (sLine.Token(1).Equals("903")) {
 			/* SASL success! */
-			m_pNetwork->GetIRCSock()->ResumeCap();
+			GetNetwork()->GetIRCSock()->ResumeCap();
 			m_bAuthenticated = true;
 			DEBUG("sasl: Authenticated with mechanism [" << m_Mechanisms.GetCurrent() << "]");
 		} else if (sLine.Token(1).Equals("904") || sLine.Token(1).Equals("905")) {
@@ -496,7 +515,7 @@ public:
 				PutIRC("AUTHENTICATE " + m_Mechanisms.GetCurrent());
 			} else {
 				CheckRequireAuth();
-				m_pNetwork->GetIRCSock()->ResumeCap();
+				GetNetwork()->GetIRCSock()->ResumeCap();
 			}
 		} else if (sLine.Token(1).Equals("906")) {
 			/* CAP wasn't paused? */
@@ -504,7 +523,7 @@ public:
 			CheckRequireAuth();
 		} else if (sLine.Token(1).Equals("907")) {
 			m_bAuthenticated = true;
-			m_pNetwork->GetIRCSock()->ResumeCap();
+			GetNetwork()->GetIRCSock()->ResumeCap();
 			DEBUG("sasl: Received 907 -- We are already registered");
 		} else {
 			return CONTINUE;

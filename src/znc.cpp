@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/FileUtils.h>
@@ -122,6 +130,12 @@ CString CZNC::GetCompileOptionsString() {
 		"threads"
 #else
 		"blocking"
+#endif
+		", charset: "
+#ifdef HAVE_ICU
+		"yes"
+#else
+		"no"
 #endif
 	;
 }
@@ -263,7 +277,16 @@ bool CZNC::WritePemFile() {
 	CString sPemFile = GetPemLocation();
 
 	CUtils::PrintAction("Writing Pem file [" + sPemFile + "]");
+#ifndef _WIN32
+    int fd = creat(sPemFile.c_str(), 0600);
+	if (fd == -1) {
+		CUtils::PrintStatus(false, "Unable to open");
+		return false;
+	}
+    FILE *f = fdopen(fd, "w");
+#else
 	FILE *f = fopen(sPemFile.c_str(), "w");
+#endif
 
 	if (!f) {
 		CUtils::PrintStatus(false, "Unable to open");
@@ -344,10 +367,6 @@ CString CZNC::GetUserPath() const {
 
 CString CZNC::GetModPath() const {
 	CString sModPath = m_sZNCPath + "/modules";
-
-	if (!CFile::Exists(sModPath)) {
-		CDir::MakeDir(sModPath);
-	}
 
 	return sModPath;
 }
@@ -431,6 +450,7 @@ bool CZNC::WriteConfig() {
 		CConfig listenerConfig;
 
 		listenerConfig.AddKeyValuePair("Host", pListener->GetBindHost());
+		listenerConfig.AddKeyValuePair("URIPrefix", pListener->GetURIPrefix() + "/");
 		listenerConfig.AddKeyValuePair("Port", CString(pListener->GetPort()));
 
 		listenerConfig.AddKeyValuePair("IPv4", CString(pListener->GetAddrType() != ADDR_IPV6ONLY));
@@ -465,6 +485,10 @@ bool CZNC::WriteConfig() {
 
 	for (unsigned int v = 0; v < m_vsBindHosts.size(); v++) {
 		config.AddKeyValuePair("BindHost", m_vsBindHosts[v].FirstLine());
+	}
+
+	for (unsigned int v = 0; v < m_vsTrustedProxies.size(); v++) {
+		config.AddKeyValuePair("TrustedProxy", m_vsTrustedProxies[v].FirstLine());
 	}
 
 	CModules& Mods = GetModules();
@@ -542,10 +566,13 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 	vsLines.push_back("Version = " + CString(VERSION, 1));
 
 	m_sConfigFile = ExpandConfigPath(sConfigFile);
-	CUtils::PrintMessage("Building new config");
+
+	if (CFile::Exists(m_sConfigFile)) {
+		CUtils::PrintStatus(false, "WARNING: config [" + m_sConfigFile + "] already exists.");
+	}
 
 	CUtils::PrintMessage("");
-	CUtils::PrintMessage("First let's start with some global settings...");
+	CUtils::PrintMessage("-- Global settings --");
 	CUtils::PrintMessage("");
 
 	// Listen
@@ -555,38 +582,40 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 	bool b6 = false;
 #endif
 	CString sListenHost;
+	CString sURIPrefix;
 	bool bListenSSL = false;
 	unsigned int uListenPort = 0;
 	bool bSuccess;
 
 	do {
 		bSuccess = true;
-		while (!CUtils::GetNumInput("What port would you like ZNC to listen on?", uListenPort, 1025, 65535)) ;
-
-#ifdef HAVE_LIBSSL
-		if (CUtils::GetBoolInput("Would you like ZNC to listen using SSL?", bListenSSL)) {
-			bListenSSL = true;
-
-			CString sPemFile = GetPemLocation();
-			if (!CFile::Exists(sPemFile)) {
-				CUtils::PrintError("Unable to locate pem file: [" + sPemFile + "]");
-				if (CUtils::GetBoolInput("Would you like to create a new pem file now?",
-							true)) {
-					WritePemFile();
+		while (true) {
+			if (!CUtils::GetNumInput("Listen on port", uListenPort, 1025, 65534)) {
+				continue;
+			}
+			if (uListenPort == 6667) {
+				CUtils::PrintStatus(false, "WARNING: Some web browsers reject port 6667. If you intend to");
+				CUtils::PrintStatus(false, "use ZNC's web interface, you might want to use another port.");
+				if (!CUtils::GetBoolInput("Proceed with port 6667 anyway?", true)) {
+					continue;
 				}
 			}
-		} else
-			bListenSSL = false;
+			break;
+		}
+
+
+#ifdef HAVE_LIBSSL
+		bListenSSL = CUtils::GetBoolInput("Listen using SSL", bListenSSL);
 #endif
 
 #ifdef HAVE_IPV6
-		b6 = CUtils::GetBoolInput("Would you like ZNC to listen using ipv6?", b6);
+		b6 = CUtils::GetBoolInput("Listen using both IPv4 and IPv6", b6);
 #endif
 
-		CUtils::GetInput("Listen Host", sListenHost, sListenHost, "Blank for all ips");
+		// Don't ask for listen host, it may be configured later if needed.
 
 		CUtils::PrintAction("Verifying the listener");
-		CListener* pListener = new CListener((unsigned short int)uListenPort, sListenHost, bListenSSL,
+		CListener* pListener = new CListener((unsigned short int)uListenPort, sListenHost, sURIPrefix, bListenSSL,
 				b6 ? ADDR_ALL : ADDR_IPV4ONLY, CListener::ACCEPT_ALL);
 		if (!pListener->Listen()) {
 			CUtils::PrintStatus(false, FormatBindError());
@@ -595,6 +624,14 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 			CUtils::PrintStatus(true);
 		delete pListener;
 	} while (!bSuccess);
+
+#ifdef HAVE_LIBSSL
+	CString sPemFile = GetPemLocation();
+	if (!CFile::Exists(sPemFile)) {
+		CUtils::PrintMessage("Unable to locate pem file: [" + sPemFile + "], creating it");
+		WritePemFile();
+	}
+#endif
 
 	vsLines.push_back("<Listener l>");
 	vsLines.push_back("\tPort = " + CString(uListenPort));
@@ -608,265 +645,121 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 	// !Listen
 
 	set<CModInfo> ssGlobalMods;
-	GetModules().GetAvailableMods(ssGlobalMods, CModInfo::GlobalModule);
-	size_t uNrOtherGlobalMods = FilterUncommonModules(ssGlobalMods);
-
-	if (!ssGlobalMods.empty()) {
-		CUtils::PrintMessage("");
-		CUtils::PrintMessage("-- Global Modules --");
-		CUtils::PrintMessage("");
-
-		CTable Table;
-		Table.AddColumn("Name");
-		Table.AddColumn("Description");
-		set<CModInfo>::iterator it;
-
-		for (it = ssGlobalMods.begin(); it != ssGlobalMods.end(); ++it) {
-			const CModInfo& Info = *it;
-			Table.AddRow();
-			Table.SetCell("Name", Info.GetName());
-			Table.SetCell("Description", Info.GetDescription().Ellipsize(128));
-		}
-
-		unsigned int uTableIdx = 0; CString sLine;
-		while (Table.GetLine(uTableIdx++, sLine)) {
-			CUtils::PrintMessage(sLine);
-		}
-
-		if (uNrOtherGlobalMods > 0) {
-			CUtils::PrintMessage("And " + CString(uNrOtherGlobalMods) + " other (uncommon) modules. You can enable those later.");
-		}
-
-		CUtils::PrintMessage("");
-
-		for (it = ssGlobalMods.begin(); it != ssGlobalMods.end(); ++it) {
-			const CModInfo& Info = *it;
-			CString sName = Info.GetName();
-
-			if (CDebug::StdoutIsTTY()) {
-				if (CUtils::GetBoolInput("Load global module <\033[1m" + sName + "\033[22m>?", false))
-					vsLines.push_back("LoadModule = " + sName);
-			} else {
-				if (CUtils::GetBoolInput("Load global module <" + sName + ">?", false))
-					vsLines.push_back("LoadModule = " + sName);
-			}
-		}
+	GetModules().GetDefaultMods(ssGlobalMods, CModInfo::GlobalModule);
+	vector<CString> vsGlobalModNames;
+	for (set<CModInfo>::const_iterator it = ssGlobalMods.begin(); it != ssGlobalMods.end(); ++it) {
+		vsGlobalModNames.push_back(it->GetName());
+		vsLines.push_back("LoadModule = " + it->GetName());
 	}
+	CUtils::PrintMessage("Enabled global modules [" + CString(", ").Join(vsGlobalModNames.begin(), vsGlobalModNames.end()) + "]");
 
 	// User
 	CUtils::PrintMessage("");
-	CUtils::PrintMessage("Now we need to set up a user...");
+	CUtils::PrintMessage("-- Admin user settings --");
 	CUtils::PrintMessage("");
 
-	bool bFirstUser = true;
-
+	vsLines.push_back("");
+	CString sNick;
 	do {
+		CUtils::GetInput("Username", sUser, "", "alphanumeric");
+	} while (!CUser::IsValidUserName(sUser));
+
+	vsLines.push_back("<User " + sUser + ">");
+	CString sSalt;
+	sAnswer = CUtils::GetSaltedHashPass(sSalt);
+	vsLines.push_back("\tPass       = " + CUtils::sDefaultHash + "#" + sAnswer + "#" + sSalt + "#");
+
+	vsLines.push_back("\tAdmin      = true");
+
+	CUtils::GetInput("Nick", sNick, CUser::MakeCleanUserName(sUser));
+	vsLines.push_back("\tNick       = " + sNick);
+	CUtils::GetInput("Alternate nick", sAnswer, sNick + "_");
+	if (!sAnswer.empty()) {
+		vsLines.push_back("\tAltNick    = " + sAnswer);
+	}
+	CUtils::GetInput("Ident", sAnswer, sUser);
+	vsLines.push_back("\tIdent      = " + sAnswer);
+	CUtils::GetInput("Real name", sAnswer, "Got ZNC?");
+	vsLines.push_back("\tRealName   = " + sAnswer);
+	CUtils::GetInput("Bind host", sAnswer, "", "optional");
+	if (!sAnswer.empty()) {
+		vsLines.push_back("\tBindHost   = " + sAnswer);
+	}
+
+	set<CModInfo> ssUserMods;
+	GetModules().GetDefaultMods(ssUserMods, CModInfo::UserModule);
+	vector<CString> vsUserModNames;
+	for (set<CModInfo>::const_iterator it = ssUserMods.begin(); it != ssUserMods.end(); ++it) {
+		vsUserModNames.push_back(it->GetName());
+		vsLines.push_back("\tLoadModule = " + it->GetName());
+	}
+	CUtils::PrintMessage("Enabled user modules [" + CString(", ").Join(vsUserModNames.begin(), vsUserModNames.end()) + "]");
+
+	CUtils::PrintMessage("");
+	if (CUtils::GetBoolInput("Set up a network?", true)) {
 		vsLines.push_back("");
-		CString sNick;
+
+		CUtils::PrintMessage("");
+		CUtils::PrintMessage("-- Network settings --");
+		CUtils::PrintMessage("");
+
 		do {
-			CUtils::GetInput("Username", sUser, "", "AlphaNumeric");
-		} while (!CUser::IsValidUserName(sUser));
+			CUtils::GetInput("Name", sNetwork, "freenode");
+		} while (!CIRCNetwork::IsValidNetwork(sNetwork));
 
-		vsLines.push_back("<User " + sUser + ">");
-		CString sSalt;
-		sAnswer = CUtils::GetSaltedHashPass(sSalt);
-		vsLines.push_back("\tPass       = " + CUtils::sDefaultHash + "#" + sAnswer + "#" + sSalt + "#");
+		vsLines.push_back("\t<Network " + sNetwork + ">");
 
-		if (CUtils::GetBoolInput("Would you like this user to be an admin?", bFirstUser)) {
-			vsLines.push_back("\tAdmin      = true");
-		} else {
-			vsLines.push_back("\tAdmin      = false");
+		set<CModInfo> ssNetworkMods;
+		GetModules().GetDefaultMods(ssNetworkMods, CModInfo::NetworkModule);
+		vector<CString> vsNetworkModNames;
+		for (set<CModInfo>::const_iterator it = ssNetworkMods.begin(); it != ssNetworkMods.end(); ++it) {
+			vsNetworkModNames.push_back(it->GetName());
+			vsLines.push_back("\t\tLoadModule = " + it->GetName());
 		}
 
-		CUtils::GetInput("Nick", sNick, CUser::MakeCleanUserName(sUser));
-		vsLines.push_back("\tNick       = " + sNick);
-		CUtils::GetInput("Alt Nick", sAnswer, sNick + "_");
-		if (!sAnswer.empty()) {
-			vsLines.push_back("\tAltNick    = " + sAnswer);
-		}
-		CUtils::GetInput("Ident", sAnswer, sNick);
-		vsLines.push_back("\tIdent      = " + sAnswer);
-		CUtils::GetInput("Real Name", sAnswer, "Got ZNC?");
-		vsLines.push_back("\tRealName   = " + sAnswer);
-		CUtils::GetInput("Bind Host", sAnswer, "", "optional");
-		if (!sAnswer.empty()) {
-			vsLines.push_back("\tBindHost   = " + sAnswer);
-		}
-		// todo: Possibly add motd
+		CString sHost, sPass, sHint;
+		bool bSSL = false;
+		unsigned int uServerPort = 0;
 
-		unsigned int uBufferCount = 0;
-
-		CUtils::GetNumInput("Number of lines to buffer per channel", uBufferCount, 0, ~0, 50);
-		if (uBufferCount) {
-			vsLines.push_back("\tBuffer     = " + CString(uBufferCount));
-		}
-		if (CUtils::GetBoolInput("Would you like to clear channel buffers after replay?", true)) {
-			vsLines.push_back("\tAutoClearChanBuffer = true");
-		} else {
-			vsLines.push_back("\tAutoClearChanBuffer = false");
-		}
-
-		CUtils::GetInput("Default channel modes", sAnswer, "+stn");
-		if (!sAnswer.empty()) {
-			vsLines.push_back("\tChanModes  = " + sAnswer);
-		}
-
-		set<CModInfo> ssUserMods;
-		GetModules().GetAvailableMods(ssUserMods);
-		size_t uNrOtherUserMods = FilterUncommonModules(ssUserMods);
-
-		if (!ssUserMods.empty()) {
-			vsLines.push_back("");
-			CUtils::PrintMessage("");
-			CUtils::PrintMessage("-- User Modules --");
-			CUtils::PrintMessage("");
-
-			CTable Table;
-			Table.AddColumn("Name");
-			Table.AddColumn("Description");
-			set<CModInfo>::iterator it;
-
-			for (it = ssUserMods.begin(); it != ssUserMods.end(); ++it) {
-				const CModInfo& Info = *it;
-				Table.AddRow();
-				Table.SetCell("Name", Info.GetName());
-				Table.SetCell("Description", Info.GetDescription().Ellipsize(128));
-			}
-
-			unsigned int uTableIdx = 0; CString sLine;
-			while (Table.GetLine(uTableIdx++, sLine)) {
-				CUtils::PrintMessage(sLine);
-			}
-
-			if (uNrOtherUserMods > 0) {
-				CUtils::PrintMessage("And " + CString(uNrOtherUserMods) + " other (uncommon) modules. You can enable those later.");
-			}
-
-			CUtils::PrintMessage("");
-
-			for (it = ssUserMods.begin(); it != ssUserMods.end(); ++it) {
-				const CModInfo& Info = *it;
-				CString sName = Info.GetName();
-
-				if (CDebug::StdoutIsTTY()) {
-					if (CUtils::GetBoolInput("Load module <\033[1m" + sName + "\033[22m>?", false))
-						vsLines.push_back("\tLoadModule = " + sName);
-				} else {
-					if (CUtils::GetBoolInput("Load module <" + sName + ">?", false))
-						vsLines.push_back("\tLoadModule = " + sName);
-				}
-			}
-		}
-
-		CUtils::PrintMessage("");
-		CString sAAnother = "a";
-		while (CUtils::GetBoolInput("Would you like to set up " + sAAnother + " network?", false)) {
-			sAAnother = "another";
-			vsLines.push_back("");
-
-			do {
-				CUtils::GetInput("Network", sNetwork, "", "e.g. `freenode' or `efnet'");
-			} while (!CIRCNetwork::IsValidNetwork(sNetwork));
-
-			vsLines.push_back("\t<Network " + sNetwork + ">");
-
-			set<CModInfo> ssNetworkMods;
-			GetModules().GetAvailableMods(ssNetworkMods, CModInfo::NetworkModule);
-			size_t uNrOtherNetworkMods = FilterUncommonModules(ssNetworkMods);
-
-			if (!ssNetworkMods.empty()) {
-				CUtils::PrintMessage("");
-				CUtils::PrintMessage("-- Network Modules --");
-				CUtils::PrintMessage("");
-
-				CTable Table;
-				Table.AddColumn("Name");
-				Table.AddColumn("Description");
-				set<CModInfo>::iterator it;
-
-				for (it = ssNetworkMods.begin(); it != ssNetworkMods.end(); ++it) {
-					const CModInfo& Info = *it;
-					Table.AddRow();
-					Table.SetCell("Name", Info.GetName());
-					Table.SetCell("Description", Info.GetDescription().Ellipsize(128));
-				}
-
-				unsigned int uTableIdx = 0; CString sLine;
-				while (Table.GetLine(uTableIdx++, sLine)) {
-					CUtils::PrintMessage(sLine);
-				}
-
-				if (uNrOtherNetworkMods > 0) {
-					CUtils::PrintMessage("And " + CString(uNrOtherNetworkMods) + " other (uncommon) modules. You can enable those later.");
-				}
-
-				CUtils::PrintMessage("");
-
-				for (it = ssNetworkMods.begin(); it != ssNetworkMods.end(); ++it) {
-					const CModInfo& Info = *it;
-					CString sName = Info.GetName();
-
-					if (CDebug::StdoutIsTTY()) {
-						if (CUtils::GetBoolInput("Load module <\033[1m" + sName + "\033[22m>?", false))
-							vsLines.push_back("\t\tLoadModule = " + sName);
-					} else {
-						if (CUtils::GetBoolInput("Load module <" + sName + ">?", false))
-							vsLines.push_back("\t\tLoadModule = " + sName);
-					}
-				}
-			}
-
-			vsLines.push_back("");
-			CUtils::PrintMessage("");
-			CUtils::PrintMessage("-- IRC Servers --");
-			CUtils::PrintMessage("Only add servers from the same IRC network.");
-			CUtils::PrintMessage("If a server from the list can't be reached, another server will be used.");
-			CUtils::PrintMessage("");
-
-			do {
-				CString sHost, sPass;
-				bool bSSL = false;
-				unsigned int uServerPort = 0;
-
-				while (!CUtils::GetInput("IRC server", sHost, "", "host only") || !CServer::IsValidHostName(sHost)) ;
-				while (!CUtils::GetNumInput("[" + sHost + "] Port", uServerPort, 1, 65535, 6667)) ;
-				CUtils::GetInput("[" + sHost + "] Password (probably empty)", sPass);
-
+		if (sNetwork.Equals("freenode")) {
+			sHost = "chat.freenode.net";
 #ifdef HAVE_LIBSSL
-				bSSL = CUtils::GetBoolInput("Does this server use SSL?", false);
+			bSSL = true;
 #endif
-
-				vsLines.push_back("\t\tServer     = " + sHost + ((bSSL) ? " +" : " ") + CString(uServerPort) + " " + sPass);
-
-				CUtils::PrintMessage("");
-			} while (CUtils::GetBoolInput("Would you like to add another server for this IRC network?", false));
-
-			vsLines.push_back("");
-			CUtils::PrintMessage("");
-			CUtils::PrintMessage("-- Channels --");
-			CUtils::PrintMessage("");
-
-			CString sArg = "a";
-			CString sPost = " for ZNC to automatically join?";
-			bool bDefault = true;
-
-			while (CUtils::GetBoolInput("Would you like to add " + sArg + " channel" + sPost, bDefault)) {
-				while (!CUtils::GetInput("Channel name", sAnswer)) ;
-				vsLines.push_back("\t\t<Chan " + sAnswer + ">");
-				vsLines.push_back("\t\t</Chan>");
-				sArg = "another";
-				sPost = "?";
-				bDefault = false;
-			}
-
-			vsLines.push_back("\t</Network>");
+		} else {
+			sHint = "host only";
 		}
 
-		vsLines.push_back("</User>");
+		while (!CUtils::GetInput("Server host", sHost, sHost, sHint) || !CServer::IsValidHostName(sHost));
+#ifdef HAVE_LIBSSL
+		bSSL = CUtils::GetBoolInput("Server uses SSL?", bSSL);
+#endif
+		while (!CUtils::GetNumInput("Server port", uServerPort, 1, 65535, bSSL ? 6697 : 6667));
+		CUtils::GetInput("Server password (probably empty)", sPass);
 
-		CUtils::PrintMessage("");
-		bFirstUser = false;
-	} while (CUtils::GetBoolInput("Would you like to set up another user?", false));
+		vsLines.push_back("\t\tServer     = " + sHost + ((bSSL) ? " +" : " ") + CString(uServerPort) + " " + sPass);
+
+		CString sChans;
+		if (CUtils::GetInput("Initial channels", sChans)) {
+			vsLines.push_back("");
+			VCString vsChans;
+			sChans.Replace(",", " ");
+			sChans.Replace(";", " ");
+			sChans.Split(" ", vsChans, false, "", "", true, true);
+			for (const CString& sChan : vsChans) {
+				vsLines.push_back("\t\t<Chan " + sChan + ">");
+				vsLines.push_back("\t\t</Chan>");
+			}
+		}
+
+		CUtils::PrintMessage("Enabled network modules [" + CString(", ").Join(vsNetworkModNames.begin(), vsNetworkModNames.end()) + "]");
+
+		vsLines.push_back("\t</Network>");
+	}
+
+	vsLines.push_back("</User>");
+
+	CUtils::PrintMessage("");
 	// !User
 
 	CFile File;
@@ -882,7 +775,7 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 			} else {
 				File.Close();
 				CUtils::PrintStatus(false, "This config already exists.");
-				if (CUtils::GetBoolInput("Would you like to overwrite it?", false))
+				if (CUtils::GetBoolInput("Are you sure you want to overwrite it?", false))
 					CUtils::PrintAction("Overwriting config [" + m_sConfigFile + "]");
 				else
 					bFileOK = false;
@@ -899,7 +792,7 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 			}
 		}
 		if (!bFileOK) {
-			CUtils::GetInput("Please specify an alternate location (or \"stdout\" for displaying the config)", m_sConfigFile, m_sConfigFile);
+			while (!CUtils::GetInput("Please specify an alternate location", m_sConfigFile, "",  "or \"stdout\" for displaying the config"));
 			if (m_sConfigFile.Equals("stdout"))
 				bFileOK = true;
 			else
@@ -951,32 +844,13 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
 	CUtils::PrintMessage("");
 	CUtils::PrintMessage("Try something like this in your IRC client...", true);
 	CUtils::PrintMessage("/server <znc_server_ip> " + sSSL + CString(uListenPort) + " " + sUser + ":<pass>", true);
-	CUtils::PrintMessage("And this in your browser...", true);
+	CUtils::PrintMessage("");
+	CUtils::PrintMessage("To manage settings, users and networks, point your web browser to", true);
 	CUtils::PrintMessage(sProtocol + "://<znc_server_ip>:" + CString(uListenPort) + "/", true);
 	CUtils::PrintMessage("");
 
 	File.UnLock();
 	return bFileOpen && CUtils::GetBoolInput("Launch ZNC now?", true);
-}
-
-size_t CZNC::FilterUncommonModules(set<CModInfo>& ssModules) {
-	const char* ns[] = { "webadmin", "controlpanel",
-		"chansaver", "keepnick", "simple_away", "partyline",
-		"kickrejoin", "nickserv", "perform" };
-	const set<CString> ssNames(ns, ns + sizeof(ns) / sizeof(ns[0]));
-
-	size_t uNrRemoved = 0;
-	for(set<CModInfo>::iterator it = ssModules.begin(); it != ssModules.end(); ) {
-		if(ssNames.count(it->GetName()) > 0) {
-			++it;
-		} else {
-			set<CModInfo>::iterator it2 = it++;
-			ssModules.erase(it2);
-			uNrRemoved++;
-		}
-	}
-
-	return uNrRemoved;
 }
 
 void CZNC::BackupConfigOnce(const CString& sSuffix) {
@@ -994,13 +868,11 @@ void CZNC::BackupConfigOnce(const CString& sSuffix) {
 		CUtils::PrintStatus(false, strerror(errno));
 }
 
-bool CZNC::ParseConfig(const CString& sConfig)
+bool CZNC::ParseConfig(const CString& sConfig, CString& sError)
 {
-	CString s;
-
 	m_sConfigFile = ExpandConfigPath(sConfig, false);
 
-	return DoRehash(s);
+	return DoRehash(sError);
 }
 
 bool CZNC::RehashConfig(CString& sError)
@@ -1093,6 +965,7 @@ bool CZNC::DoRehash(CString& sError)
 	}
 
 	m_vsBindHosts.clear();
+	m_vsTrustedProxies.clear();
 	m_vsMotd.clear();
 
 	// Delete all listeners
@@ -1186,6 +1059,12 @@ bool CZNC::DoRehash(CString& sError)
 	for (vit = vsList.begin(); vit != vsList.end(); ++vit) {
 		AddBindHost(*vit);
 	}
+
+	config.FindStringVector("trustedproxy", vsList);
+	for (vit = vsList.begin(); vit != vsList.end(); ++vit) {
+		AddTrustedProxy(*vit);
+	}
+
 	config.FindStringVector("vhost", vsList);
 	for (vit = vsList.begin(); vit != vsList.end(); ++vit) {
 		AddBindHost(*vit);
@@ -1409,6 +1288,37 @@ bool CZNC::RemBindHost(const CString& sHost) {
 	return false;
 }
 
+void CZNC::ClearTrustedProxies() {
+	m_vsTrustedProxies.clear();
+}
+
+bool CZNC::AddTrustedProxy(const CString& sHost) {
+	if (sHost.empty()) {
+		return false;
+	}
+
+	for (unsigned int a = 0; a < m_vsTrustedProxies.size(); a++) {
+		if (m_vsTrustedProxies[a].Equals(sHost)) {
+			return false;
+		}
+	}
+
+	m_vsTrustedProxies.push_back(sHost);
+	return true;
+}
+
+bool CZNC::RemTrustedProxy(const CString& sHost) {
+	VCString::iterator it;
+	for (it = m_vsTrustedProxies.begin(); it != m_vsTrustedProxies.end(); ++it) {
+		if (sHost.Equals(*it)) {
+			m_vsTrustedProxies.erase(it);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void CZNC::Broadcast(const CString& sMessage, bool bAdminOnly,
 		CUser* pSkipUser, CClient *pSkipClient) {
 	for (map<CString,CUser*>::iterator a = m_msUsers.begin(); a != m_msUsers.end(); ++a) {
@@ -1625,12 +1535,15 @@ bool CZNC::AddListener(const CString& sLine, CString& sError) {
 		bSSL = true;
 	}
 
+	// No support for URIPrefix for old-style configs.
+	CString sURIPrefix;
 	unsigned short uPort = sPort.ToUShort();
-	return AddListener(uPort, sBindHost, bSSL, eAddr, eAccept, sError);
+	return AddListener(uPort, sBindHost, sURIPrefix, bSSL, eAddr, eAccept, sError);
 }
 
-bool CZNC::AddListener(unsigned short uPort, const CString& sBindHost, bool bSSL,
-			EAddrType eAddr, CListener::EAcceptType eAccept, CString& sError) {
+bool CZNC::AddListener(unsigned short uPort, const CString& sBindHost,
+		       const CString& sURIPrefixRaw, bool bSSL,
+		       EAddrType eAddr, CListener::EAcceptType eAccept, CString& sError) {
 	CString sHostComment;
 
 	if (!sBindHost.empty()) {
@@ -1691,7 +1604,18 @@ bool CZNC::AddListener(unsigned short uPort, const CString& sBindHost, bool bSSL
 		return false;
 	}
 
-	CListener* pListener = new CListener(uPort, sBindHost, bSSL, eAddr, eAccept);
+	// URIPrefix must start with a slash and end without one.
+	CString sURIPrefix = CString(sURIPrefixRaw);
+	if(!sURIPrefix.empty()) {
+		if (!sURIPrefix.StartsWith("/")) {
+			sURIPrefix = "/" + sURIPrefix;
+		}
+		if (sURIPrefix.EndsWith("/")) {
+			sURIPrefix.TrimRight("/");
+		}
+	}
+
+	CListener* pListener = new CListener(uPort, sBindHost, sURIPrefix, bSSL, eAddr, eAccept);
 
 	if (!pListener->Listen()) {
 		sError = FormatBindError();
@@ -1708,6 +1632,7 @@ bool CZNC::AddListener(unsigned short uPort, const CString& sBindHost, bool bSSL
 
 bool CZNC::AddListener(CConfig* pConfig, CString& sError) {
 	CString sBindHost;
+	CString sURIPrefix;
 	bool bSSL;
 	bool b4;
 #ifdef HAVE_IPV6
@@ -1729,6 +1654,7 @@ bool CZNC::AddListener(CConfig* pConfig, CString& sError) {
 	pConfig->FindBoolEntry("ipv6", b6, b6);
 	pConfig->FindBoolEntry("allowirc", bIRC, true);
 	pConfig->FindBoolEntry("allowweb", bWeb, true);
+	pConfig->FindStringEntry("uriprefix", sURIPrefix);
 
 	EAddrType eAddr;
 	if (b4 && b6) {
@@ -1756,7 +1682,7 @@ bool CZNC::AddListener(CConfig* pConfig, CString& sError) {
 		return false;
 	}
 
-	return AddListener(uPort, sBindHost, bSSL, eAddr, eAccept, sError);
+	return AddListener(uPort, sBindHost, sURIPrefix, bSSL, eAddr, eAccept, sError);
 }
 
 bool CZNC::AddListener(CListener* pListener) {
@@ -1787,9 +1713,22 @@ bool CZNC::DelListener(CListener* pListener) {
 	return false;
 }
 
+static CZNC* s_pZNC = NULL;
+
+void CZNC::CreateInstance() {
+	if (s_pZNC)
+		abort();
+
+	s_pZNC = new CZNC();
+}
+
 CZNC& CZNC::Get() {
-	static CZNC* pZNC = new CZNC;
-	return *pZNC;
+	return *s_pZNC;
+}
+
+void CZNC::DestroyInstance() {
+	delete s_pZNC;
+	s_pZNC = NULL;
 }
 
 CZNC::TrafficStatsMap CZNC::GetTrafficStats(TrafficStatsPair &Users,
@@ -1914,6 +1853,10 @@ protected:
 };
 
 void CZNC::SetConnectDelay(unsigned int i) {
+	if (i < 1) {
+		// Don't hammer server with our failed connects
+		i = 1;
+	}
 	if (m_uiConnectDelay != i && m_pConnectQueueTimer != NULL) {
 		m_pConnectQueueTimer->Start(i);
 	}
@@ -1961,7 +1904,6 @@ void CZNC::AddNetworkToQueue(CIRCNetwork *pNetwork) {
 			return;
 		}
 	}
-
 
 	m_lpConnectQueue.push_back(pNetwork);
 	EnableConnectQueue();

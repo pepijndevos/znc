@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _MODULES_H
@@ -11,6 +19,7 @@
 
 #include <znc/zncconfig.h>
 #include <znc/WebModules.h>
+#include <znc/Threads.h>
 #include <znc/main.h>
 #include <set>
 #include <queue>
@@ -169,6 +178,29 @@ private:
 	FPTimer_t  m_pFBCallback;
 };
 
+#ifdef HAVE_PTHREAD
+/// A CJob version which can be safely used in modules. The job will be
+/// cancelled when the module is unloaded.
+class CModuleJob : public CJob {
+public:
+	CModuleJob(CModule *pModule, const CString& sName, const CString& sDesc)
+		: CJob(), m_pModule(pModule), m_sName(sName), m_sDescription(sDesc) {
+	}
+	virtual ~CModuleJob();
+
+	// Getters
+	CModule* GetModule() const { return m_pModule; }
+	const CString& GetName() const { return m_sName; }
+	const CString& GetDescription() const { return m_sDescription; }
+	// !Getters
+
+protected:
+	CModule* m_pModule;
+	const CString  m_sName;
+	const CString  m_sDescription;
+};
+#endif
+
 class CModInfo {
 public:
 	typedef CModule* (*ModLoader)(ModHandle p, CUser* pUser, CIRCNetwork* pNetwork, const CString& sModName, const CString& sModPath);
@@ -195,7 +227,7 @@ public:
 		return (GetName() < Info.GetName());
 	}
 
-	bool SupportsType(EModuleType eType) {
+	bool SupportsType(EModuleType eType) const {
 		return m_seType.find(eType) != m_seType.end();
 	}
 
@@ -463,7 +495,7 @@ public:
 	virtual EModRet OnBroadcast(CString& sMessage);
 
 	/** This module hook is called when a user mode on a channel changes.
-	 *  @param OpNick The nick who sent the mode change.
+	 *  @param pOpNick The nick who sent the mode change, or NULL if set by server.
 	 *  @param Nick The nick whose channel mode changes.
 	 *  @param Channel The channel on which the user mode is changed.
 	 *  @param uMode The mode character that is changed, e.g. '@' for op.
@@ -473,31 +505,38 @@ public:
 	 *  @see CIRCSock::GetModeType() for converting uMode into a mode (e.g.
 	 *       'o' for op).
 	 */
+	virtual void OnChanPermission2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
 	virtual void OnChanPermission(const CNick& OpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
 	/** Called when a nick is opped on a channel */
+	virtual void OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	virtual void OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	/** Called when a nick is deopped on a channel */
+	virtual void OnDeop2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	virtual void OnDeop(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	/** Called when a nick is voiced on a channel */
+	virtual void OnVoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	virtual void OnVoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	/** Called when a nick is devoiced on a channel */
+	virtual void OnDevoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	virtual void OnDevoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	/** Called on an individual channel mode change.
-	 *  @param OpNick The nick who changes the channel mode.
+	 *  @param pOpNick The nick who changes the channel mode, or NULL if set by server.
 	 *  @param Channel The channel whose mode is changed.
 	 *  @param uMode The mode character that is changed.
 	 *  @param sArg The argument to the mode character, if any.
 	 *  @param bAdded True if this mode is added ("+"), else false.
 	 *  @param bNoChange True if this mode was already effective before.
 	 */
+	virtual void OnMode2(const CNick* pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
 	virtual void OnMode(const CNick& OpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
 	/** Called on any channel mode change. This is called before the more
 	 *  detailed mode hooks like e.g. OnOp() and OnMode().
-	 *  @param OpNick The nick who changes the channel mode.
+	 *  @param pOpNick The nick who changes the channel mode, or NULL if set by server.
 	 *  @param Channel The channel whose mode is changed.
 	 *  @param sModes The raw mode change, e.g. "+s-io".
 	 *  @param sArgs All arguments to the mode change from sModes.
 	 */
+	virtual void OnRawMode2(const CNick* pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
 	virtual void OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
 
 	/** Called on any raw IRC line received from the <em>IRC server</em>.
@@ -552,6 +591,11 @@ public:
 	 *  @param sMessage The kick message.
 	 */
 	virtual void OnKick(const CNick& OpNick, const CString& sKickedNick, CChan& Channel, const CString& sMessage);
+	/** This module hook is called just before ZNC tries to join an IRC channel.
+	 *  @param Chan The channel which is about to get joined.
+	 *  @return See CModule::EModRet.
+	 */
+	virtual EModRet OnJoining(CChan& Channel);
 	/** Called when a nick joins a channel.
 	 *  @param Nick The nick who joined.
 	 *  @param Channel The channel which was joined.
@@ -756,6 +800,33 @@ public:
 	 */
 	virtual EModRet OnTimerAutoJoin(CChan& Channel);
 
+	/** This module hook is called when a network is being added.
+	 *  @param Network The new IRC network.
+	 *  @param sErrorRet A message that may be displayed to the user if
+	 *                  the module stops adding the network.
+	 *  @return See CModule::EModRet.
+	 */
+	virtual EModRet OnAddNetwork(CIRCNetwork& Network, CString& sErrorRet);
+	/** This module hook is called when a network is deleted.
+	 *  @param Network The IRC network which is going to be deleted.
+	 *  @return See CModule::EModRet.
+	 */
+	virtual EModRet OnDeleteNetwork(CIRCNetwork& Network);
+
+	/** Called when ZNC sends a raw traffic line to a client.
+	 *  @param sLine The raw traffic line sent.
+	 *  @param Client The client this line is sent to.
+	 *  @warning Calling PutUser() from within this hook leads to infinite recursion.
+	 *  @return See CModule::EModRet.
+	 */
+	virtual EModRet OnSendToClient(CString& sLine, CClient& Client);
+	/** Called when ZNC sends a raw traffic line to the IRC server.
+	 *  @param sLine The raw traffic line sent.
+	 *  @warning Calling PutIRC() from within this hook leads to infinite recursion.
+	 *  @return See CModule::EModRet.
+	 */
+	virtual EModRet OnSendToIRC(CString& sLine);
+
 	ModHandle GetDLL() { return m_pDLL; }
 	static double GetCoreVersion() { return VERSION; }
 
@@ -838,6 +909,16 @@ public:
 	virtual void ListSockets();
 	// !Socket stuff
 
+#ifdef HAVE_PTHREAD
+	// Job stuff
+	void AddJob(CModuleJob *pJob);
+	void CancelJob(CModuleJob *pJob);
+	bool CancelJob(const CString& sJobName);
+	void CancelJobs(const std::set<CModuleJob*>& sJobs);
+	bool UnlinkJob(CModuleJob *pJob);
+	// !Job stuff
+#endif
+
 	// Command stuff
 	/// Register the "Help" command.
 	void AddHelpCommand();
@@ -865,6 +946,7 @@ public:
 
 	bool LoadRegistry();
 	bool SaveRegistry() const;
+	bool MoveRegistry(const CString& sPath);
 	bool SetNV(const CString & sName, const CString & sValue, bool bWriteToDisk = true);
 	CString GetNV(const CString & sName) const;
 	bool DelNV(const CString & sName, bool bWriteToDisk = true);
@@ -896,13 +978,13 @@ public:
 	 *           except when we are in a user-specific module hook in which
 	 *           case this is the user pointer.
 	 */
-	CUser* GetUser() { return m_pUser; }
+	CUser* GetUser() const { return m_pUser; }
 	/** @returns NULL except when we are in a client-specific module hook in
 	 *           which case this is the client for which the hook is called.
 	 */
-	CIRCNetwork* GetNetwork() { return m_pNetwork; }
-	CClient* GetClient() { return m_pClient; }
-	CSockManager* GetManager() { return m_pManager; }
+	CIRCNetwork* GetNetwork() const { return m_pNetwork; }
+	CClient* GetClient() const { return m_pClient; }
+	CSockManager* GetManager() const { return m_pManager; }
 	// !Getters
 
 	// Global Modules
@@ -937,9 +1019,9 @@ public:
 	 *  @param sRemoteIP The IP address from which the client tried to login.
 	 */
 	virtual void OnFailedLogin(const CString& sUsername, const CString& sRemoteIP);
-	/** This function behaves like CModule::OnRaw(), but is also called
+	/** This function behaves like CModule::OnUserRaw(), but is also called
 	 *  before the client successfully logged in to ZNC. You should always
-	 *  prefer to use CModule::OnRaw() if possible.
+	 *  prefer to use CModule::OnUserRaw() if possible.
 	 *  @param pClient The client which send this line.
 	 *  @param sLine The raw traffic line which the client sent.
 	 */
@@ -1005,6 +1087,9 @@ protected:
 	CString            m_sDescription;
 	std::set<CTimer*>  m_sTimers;
 	std::set<CSocket*> m_sSockets;
+#ifdef HAVE_PTHREAD
+	std::set<CModuleJob*> m_sJobs;
+#endif
 	ModHandle          m_pDLL;
 	CSockManager*      m_pManager;
 	CUser*             m_pUser;
@@ -1029,9 +1114,9 @@ public:
 	void SetUser(CUser* pUser) { m_pUser = pUser; }
 	void SetNetwork(CIRCNetwork* pNetwork) { m_pNetwork = pNetwork; }
 	void SetClient(CClient* pClient) { m_pClient = pClient; }
-	CUser* GetUser() { return m_pUser; }
-	CIRCNetwork* GetNetwork() { return m_pNetwork; }
-	CClient* GetClient() { return m_pClient; }
+	CUser* GetUser() const { return m_pUser; }
+	CIRCNetwork* GetNetwork() const { return m_pNetwork; }
+	CClient* GetClient() const { return m_pClient; }
 
 	void UnloadAll();
 
@@ -1045,12 +1130,19 @@ public:
 	bool OnIRCRegistration(CString& sPass, CString& sNick, CString& sIdent, CString& sRealName);
 	bool OnBroadcast(CString& sMessage);
 
+	bool OnChanPermission2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
 	bool OnChanPermission(const CNick& OpNick, const CNick& Nick, CChan& Channel, unsigned char uMode, bool bAdded, bool bNoChange);
+	bool OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	bool OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	bool OnDeop2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	bool OnDeop(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	bool OnVoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	bool OnVoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	bool OnDevoice2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
 	bool OnDevoice(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange);
+	bool OnRawMode2(const CNick* pOpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
 	bool OnRawMode(const CNick& OpNick, CChan& Channel, const CString& sModes, const CString& sArgs);
+	bool OnMode2(const CNick* pOpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
 	bool OnMode(const CNick& OpNick, CChan& Channel, char uMode, const CString& sArg, bool bAdded, bool bNoChange);
 
 	bool OnRaw(CString& sLine);
@@ -1063,6 +1155,7 @@ public:
 	bool OnQuit(const CNick& Nick, const CString& sMessage, const std::vector<CChan*>& vChans);
 	bool OnNick(const CNick& Nick, const CString& sNewNick, const std::vector<CChan*>& vChans);
 	bool OnKick(const CNick& Nick, const CString& sOpNick, CChan& Channel, const CString& sMessage);
+	bool OnJoining(CChan& Channel);
 	bool OnJoin(const CNick& Nick, CChan& Channel);
 	bool OnPart(const CNick& Nick, CChan& Channel, const CString& sMessage);
 	bool OnInvite(const CNick& Nick, const CString& sChan);
@@ -1097,6 +1190,12 @@ public:
 	bool OnTopic(CNick& Nick, CChan& Channel, CString& sTopic);
 	bool OnTimerAutoJoin(CChan& Channel);
 
+	bool OnAddNetwork(CIRCNetwork& Network, CString& sErrorRet);
+	bool OnDeleteNetwork(CIRCNetwork& Network);
+
+	bool OnSendToClient(CString& sLine, CClient& Client);
+	bool OnSendToIRC(CString& sLine);
+
 	bool OnServerCapAvailable(const CString& sCap);
 	bool OnServerCapResult(const CString& sCap, bool bSuccess);
 
@@ -1109,6 +1208,7 @@ public:
 	static bool GetModInfo(CModInfo& ModInfo, const CString& sModule, CString &sRetMsg);
 	static bool GetModPathInfo(CModInfo& ModInfo, const CString& sModule, const CString& sModPath, CString &sRetMsg);
 	static void GetAvailableMods(std::set<CModInfo>& ssMods, CModInfo::EModuleType eType = CModInfo::UserModule);
+	static void GetDefaultMods(std::set<CModInfo>& ssMods, CModInfo::EModuleType eType = CModInfo::UserModule);
 
 	// This returns the path to the .so and to the data dir
 	// which is where static data (webadmin skins) are saved

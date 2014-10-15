@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/IRCNetwork.h>
@@ -42,10 +50,10 @@ public:
 		FromString(sLine);
 	}
 
-	CAutoOpUser(const CString& sUsername, const CString& sUserKey, const CString& sHostmask, const CString& sChannels) :
+	CAutoOpUser(const CString& sUsername, const CString& sUserKey, const CString& sHostmasks, const CString& sChannels) :
 			m_sUsername(sUsername),
-			m_sUserKey(sUserKey),
-			m_sHostmask(sHostmask) {
+			m_sUserKey(sUserKey) {
+		AddHostmasks(sHostmasks);
 		AddChans(sChannels);
 	}
 
@@ -53,7 +61,6 @@ public:
 
 	const CString& GetUsername() const { return m_sUsername; }
 	const CString& GetUserKey() const { return m_sUserKey; }
-	const CString& GetHostmask() const { return m_sHostmask; }
 
 	bool ChannelMatches(const CString& sChan) const {
 		for (set<CString>::const_iterator it = m_ssChans.begin(); it != m_ssChans.end(); ++it) {
@@ -66,21 +73,40 @@ public:
 	}
 
 	bool HostMatches(const CString& sHostmask) {
-		return sHostmask.WildCmp(m_sHostmask);
+		for (set<CString>::const_iterator it = m_ssHostmasks.begin(); it != m_ssHostmasks.end(); ++it) {
+			if (sHostmask.WildCmp(*it)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	CString GetHostmasks() const {
+		return CString(",").Join(m_ssHostmasks.begin(), m_ssHostmasks.end());
 	}
 
 	CString GetChannels() const {
-		CString sRet;
+		return CString(" ").Join(m_ssChans.begin(), m_ssChans.end());
+	}
 
-		for (set<CString>::const_iterator it = m_ssChans.begin(); it != m_ssChans.end(); ++it) {
-			if (!sRet.empty()) {
-				sRet += " ";
-			}
+	bool DelHostmasks(const CString& sHostmasks) {
+		VCString vsHostmasks;
+		sHostmasks.Split(",", vsHostmasks);
 
-			sRet += *it;
+		for (unsigned int a = 0; a < vsHostmasks.size(); a++) {
+			m_ssHostmasks.erase(vsHostmasks[a]);
 		}
 
-		return sRet;
+		return m_ssHostmasks.empty();
+	}
+
+	void AddHostmasks(const CString& sHostmasks) {
+		VCString vsHostmasks;
+		sHostmasks.Split(",", vsHostmasks);
+
+		for (unsigned int a = 0; a < vsHostmasks.size(); a++) {
+			m_ssHostmasks.insert(vsHostmasks[a]);
+		}
 	}
 
 	void DelChans(const CString& sChans) {
@@ -102,22 +128,12 @@ public:
 	}
 
 	CString ToString() const {
-		CString sChans;
-
-		for (set<CString>::const_iterator it = m_ssChans.begin(); it != m_ssChans.end(); ++it) {
-			if (!sChans.empty()) {
-				sChans += " ";
-			}
-
-			sChans += *it;
-		}
-
-		return m_sUsername + "\t" + m_sHostmask + "\t" + m_sUserKey + "\t" + sChans;
+		return m_sUsername + "\t" + GetHostmasks() + "\t" + m_sUserKey + "\t" + GetChannels();
 	}
 
 	bool FromString(const CString& sLine) {
 		m_sUsername = sLine.Token(0, false, "\t");
-		m_sHostmask = sLine.Token(1, false, "\t");
+		sLine.Token(1, false, "\t").Split(",", m_ssHostmasks);
 		m_sUserKey = sLine.Token(2, false, "\t");
 		sLine.Token(3, false, "\t").Split(" ", m_ssChans);
 
@@ -127,7 +143,7 @@ private:
 protected:
 	CString      m_sUsername;
 	CString      m_sUserKey;
-	CString      m_sHostmask;
+	set<CString> m_ssHostmasks;
 	set<CString> m_ssChans;
 };
 
@@ -157,7 +173,6 @@ public:
 		for (map<CString, CAutoOpUser*>::iterator it = m_msUsers.begin(); it != m_msUsers.end(); ++it) {
 			delete it->second;
 		}
-
 		m_msUsers.clear();
 	}
 
@@ -202,8 +217,8 @@ public:
 		return HALTCORE;
 	}
 
-	virtual void OnOp(const CNick& OpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
-		if (Nick.GetNick() == m_pNetwork->GetIRCNick().GetNick()) {
+	virtual void OnOp2(const CNick* pOpNick, const CNick& Nick, CChan& Channel, bool bNoChange) {
+		if (Nick.GetNick() == GetNetwork()->GetIRCNick().GetNick()) {
 			const map<CString,CNick>& msNicks = Channel.GetNicks();
 
 			for (map<CString,CNick>::const_iterator it = msNicks.begin(); it != msNicks.end(); ++it) {
@@ -218,7 +233,7 @@ public:
 		CString sCommand = sLine.Token(0).AsUpper();
 
 		if (sCommand.Equals("HELP")) {
-			PutModule("Commands are: ListUsers, AddChans, DelChans, AddUser, DelUser");
+			PutModule("Commands are: ListUsers, AddChans, DelChans, AddMasks, DelMasks, AddUser, DelUser");
 		} else if (sCommand.Equals("TIMERS")) {
 			ListTimers();
 		} else if (sCommand.Equals("ADDUSER") || sCommand.Equals("DELUSER")) {
@@ -228,7 +243,7 @@ public:
 
 			if (sCommand.Equals("ADDUSER")) {
 				if (sHost.empty()) {
-					PutModule("Usage: " + sCommand + " <user> <hostmask> <key> [channels]");
+					PutModule("Usage: " + sCommand + " <user> <hostmask>[,<hostmasks>...] <key> [channels]");
 				} else {
 					CAutoOpUser* pUser = AddUser(sUser, sKey, sHost, sLine.Token(4, true));
 
@@ -249,16 +264,26 @@ public:
 			CTable Table;
 
 			Table.AddColumn("User");
-			Table.AddColumn("Hostmask");
+			Table.AddColumn("Hostmasks");
 			Table.AddColumn("Key");
 			Table.AddColumn("Channels");
 
 			for (map<CString, CAutoOpUser*>::iterator it = m_msUsers.begin(); it != m_msUsers.end(); ++it) {
-				Table.AddRow();
-				Table.SetCell("User", it->second->GetUsername());
-				Table.SetCell("Hostmask", it->second->GetHostmask());
-				Table.SetCell("Key", it->second->GetUserKey());
-				Table.SetCell("Channels", it->second->GetChannels());
+				VCString vsHostmasks;
+				it->second->GetHostmasks().Split(",", vsHostmasks);
+				for (unsigned int a = 0; a < vsHostmasks.size(); a++) {
+					Table.AddRow();
+					if (a == 0) {
+						Table.SetCell("User", it->second->GetUsername());
+						Table.SetCell("Key", it->second->GetUserKey());
+						Table.SetCell("Channels", it->second->GetChannels());
+					} else if (a == vsHostmasks.size()-1) {
+						Table.SetCell("User", "`-");
+					} else {
+						Table.SetCell("User", "|-");
+					}
+					Table.SetCell("Hostmasks", vsHostmasks[a]);
+				}
 			}
 
 			PutModule(Table);
@@ -287,6 +312,36 @@ public:
 			}
 
 			SetNV(pUser->GetUsername(), pUser->ToString());
+		} else if (sCommand.Equals("ADDMASKS") || sCommand.Equals("DELMASKS")) {
+			CString sUser = sLine.Token(1);
+			CString sHostmasks = sLine.Token(2, true);
+
+			if (sHostmasks.empty()) {
+				PutModule("Usage: " + sCommand + " <user> <mask>,[mask] ...");
+				return;
+			}
+
+			CAutoOpUser* pUser = FindUser(sUser);
+
+			if (!pUser) {
+				PutModule("No such user");
+				return;
+			}
+
+			if (sCommand.Equals("ADDMASKS")) {
+				pUser->AddHostmasks(sHostmasks);
+				PutModule("Hostmasks(s) added to user [" + pUser->GetUsername() + "]");
+				SetNV(pUser->GetUsername(), pUser->ToString());
+			} else {
+				if (pUser->DelHostmasks(sHostmasks)) {
+					PutModule("Removed user [" + pUser->GetUsername() + "] with key [" + pUser->GetUserKey() + "] and channels [" + pUser->GetChannels() + "]");
+					DelUser(sUser);
+					DelNV(sUser);
+				} else {
+					PutModule("Hostmasks(s) Removed from user [" + pUser->GetUsername() + "]");
+					SetNV(pUser->GetUsername(), pUser->ToString());
+				}
+			}
 		} else {
 			PutModule("Unknown command, try HELP");
 		}
@@ -313,19 +368,21 @@ public:
 	bool CheckAutoOp(const CNick& Nick, CChan& Channel) {
 		CAutoOpUser *pUser = FindUserByHost(Nick.GetHostMask(), Channel.GetName());
 
-		if (pUser) {
-			if (pUser->GetUserKey().Equals("__NOKEY__")) {
-				PutIRC("MODE " + Channel.GetName() + " +o " + Nick.GetNick());
-			} else {
-				// then insert this nick into the queue, the timer does the rest
-				CString sNick = Nick.GetNick().AsLower();
-				if (m_msQueue.find(sNick) == m_msQueue.end()) {
-					m_msQueue[sNick] = "";
-				}
+		if (!pUser) {
+			return false;
+		}
+
+		if (pUser->GetUserKey().Equals("__NOKEY__")) {
+			PutIRC("MODE " + Channel.GetName() + " +o " + Nick.GetNick());
+		} else {
+			// then insert this nick into the queue, the timer does the rest
+			CString sNick = Nick.GetNick().AsLower();
+			if (m_msQueue.find(sNick) == m_msQueue.end()) {
+				m_msQueue[sNick] = "";
 			}
 		}
 
-		return pUser;
+		return true;
 	}
 
 	void DelUser(const CString& sUser) {
@@ -341,15 +398,15 @@ public:
 		PutModule("User [" + sUser + "] removed");
 	}
 
-	CAutoOpUser* AddUser(const CString& sUser, const CString& sKey, const CString& sHost, const CString& sChans) {
+	CAutoOpUser* AddUser(const CString& sUser, const CString& sKey, const CString& sHosts, const CString& sChans) {
 		if (m_msUsers.find(sUser) != m_msUsers.end()) {
 			PutModule("That user already exists");
 			return NULL;
 		}
 
-		CAutoOpUser* pUser = new CAutoOpUser(sUser, sKey, sHost, sChans);
+		CAutoOpUser* pUser = new CAutoOpUser(sUser, sKey, sHosts, sChans);
 		m_msUsers[sUser.AsLower()] = pUser;
-		PutModule("User [" + sUser + "] added with hostmask [" + sHost + "]");
+		PutModule("User [" + sUser + "] added with hostmask(s) [" + sHosts + "]");
 		return pUser;
 	}
 
@@ -362,9 +419,9 @@ public:
 		for (map<CString, CAutoOpUser*>::iterator it = m_msUsers.begin(); it != m_msUsers.end(); ++it) {
 			pUser = it->second;
 
-			// First verify that the guy who challenged us matches a user's host
+			// First verify that the person who challenged us matches a user's host
 			if (pUser->HostMatches(Nick.GetHostMask())) {
-				const vector<CChan*>& Chans = m_pNetwork->GetChans();
+				const vector<CChan*>& Chans = GetNetwork()->GetChans();
 				bMatchedHost = true;
 
 				// Also verify that they are opped in at least one of the user's chans
@@ -459,7 +516,7 @@ public:
 	}
 
 	void OpUser(const CNick& Nick, const CAutoOpUser& User) {
-		const vector<CChan*>& Chans = m_pNetwork->GetChans();
+		const vector<CChan*>& Chans = GetNetwork()->GetChans();
 
 		for (size_t a = 0; a < Chans.size(); a++) {
 			const CChan& Chan = *Chans[a];
@@ -486,4 +543,4 @@ template<> void TModInfo<CAutoOpMod>(CModInfo& Info) {
 	Info.SetWikiPage("autoop");
 }
 
-NETWORKMODULEDEFS(CAutoOpMod, "Auto op the good guys")
+NETWORKMODULEDEFS(CAutoOpMod, "Auto op the good people")

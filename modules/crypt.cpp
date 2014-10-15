@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 //! @author prozac@rottenboy.com
@@ -27,14 +35,20 @@
 #include <znc/IRCNetwork.h>
 
 #define REQUIRESSL	1
+#define NICK_PREFIX_KEY	"[nick-prefix]"
 
 class CCryptMod : public CModule {
+	CString NickPrefix() {
+		MCString::iterator it = FindNV(NICK_PREFIX_KEY);
+		return it != EndNV() ? it->second : "*";
+	}
+
 public:
 	MODCONSTRUCTOR(CCryptMod) {}
 	virtual ~CCryptMod() {}
 
 	virtual EModRet OnUserMsg(CString& sTarget, CString& sMessage) {
-		sTarget.TrimLeft("\244");
+		sTarget.TrimLeft(NickPrefix());
 
 		if (sMessage.Left(2) == "``") {
 			sMessage.LeftChomp(2);
@@ -44,11 +58,12 @@ public:
 		MCString::iterator it = FindNV(sTarget.AsLower());
 
 		if (it != EndNV()) {
-			CChan* pChan = m_pNetwork->FindChan(sTarget);
+			CChan* pChan = GetNetwork()->FindChan(sTarget);
+			CString sNickMask = GetNetwork()->GetIRCNick().GetNickMask();
 			if (pChan) {
 				if (!pChan->AutoClearChanBuffer())
-					pChan->AddBuffer(":\244" + _NAMEDFMT(m_pNetwork->GetIRCNick().GetNickMask()) + " PRIVMSG " + _NAMEDFMT(sTarget) + " :" + _NAMEDFMT(sMessage));
-				m_pUser->PutUser(":\244" + m_pNetwork->GetIRCNick().GetNickMask() + " PRIVMSG " + sTarget + " :" + sMessage, NULL, m_pClient);
+					pChan->AddBuffer(":" + NickPrefix() + _NAMEDFMT(sNickMask) + " PRIVMSG " + _NAMEDFMT(sTarget) + " :{text}", sMessage);
+				GetUser()->PutUser(":" + NickPrefix() + sNickMask + " PRIVMSG " + sTarget + " :" + sMessage, NULL, GetClient());
 			}
 
 			CString sMsg = MakeIvec() + sMessage;
@@ -83,7 +98,7 @@ public:
 				sMessage.Decrypt(it->second);
 				sMessage.LeftChomp(8);
 				sMessage = sMessage.c_str();
-				Nick.SetNick("\244" + Nick.GetNick());
+				Nick.SetNick(NickPrefix() + Nick.GetNick());
 			}
 		}
 
@@ -129,6 +144,13 @@ public:
 					Table.AddRow();
 					Table.SetCell("Target", it->first);
 					Table.SetCell("Key", it->second);
+				}
+
+				MCString::iterator it = FindNV(NICK_PREFIX_KEY);
+				if (it == EndNV()) {
+					Table.AddRow();
+					Table.SetCell("Target", NICK_PREFIX_KEY);
+					Table.SetCell("Key", NickPrefix());
 				}
 
 				PutModule(Table);

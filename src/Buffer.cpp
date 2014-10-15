@@ -1,9 +1,17 @@
 /*
- * Copyright (C) 2004-2013  See the AUTHORS file for details.
+ * Copyright (C) 2004-2014 ZNC, see the NOTICE file for details.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <znc/znc.h>
@@ -34,18 +42,7 @@ CString CBufLine::GetLine(const CClient& Client, const MCString& msParams) const
 	if (Client.HasServerTime()) {
 		msThisParams["text"] = m_sText;
 		CString sStr = CString::NamedFormat(m_sFormat, msThisParams);
-		CString s_msec(m_time.tv_usec / 1000);
-		while (s_msec.length() < 3) {
-			s_msec = "0" + s_msec;
-		}
-		// TODO support leap seconds properly
-		// TODO support message-tags properly
-		struct tm stm;
-		memset(&stm, 0, sizeof(stm));
-		gmtime_r(&m_time.tv_sec, &stm);
-		char sTime[20] = {};
-		strftime(sTime, sizeof(sTime), "%Y-%m-%dT%H:%M:%S", &stm);
-		return "@time=" + CString(sTime) + "." + s_msec + "Z " + sStr;
+		return "@time=" + CUtils::FormatServerTime(m_time) + " " + sStr;
 	} else {
 		msThisParams["text"] = Client.GetUser()->AddTimestamp(m_time.tv_sec, m_sText);
 		return CString::NamedFormat(m_sFormat, msThisParams);
